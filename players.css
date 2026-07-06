@@ -1,0 +1,99 @@
+/* ===========================================================
+   Signature element: the session "ticket". A 5-digit code is
+   the whole sharing mechanism for this app, so it's given the
+   weight of a real match ticket stub — perforated edge, torn
+   corner — rather than a plain form field.
+   =========================================================== */
+.ticketRow{ display:flex; gap:14px; flex-wrap:wrap; margin-bottom:8px; }
+.ticket{
+  flex:1; min-width:240px;
+  background: linear-gradient(160deg, var(--surface-2), var(--surface));
+  border:1px solid var(--line); border-radius: var(--radius-m);
+  padding:18px; position:relative;
+  display:flex; flex-direction:column; gap:14px;
+}
+.ticket::before{
+  content:""; position:absolute; top:50%; left:-7px; width:14px; height:14px;
+  background: var(--bg); border-radius:50%; transform:translateY(-50%);
+}
+.ticket::after{
+  content:""; position:absolute; top:50%; right:-7px; width:14px; height:14px;
+  background: var(--bg); border-radius:50%; transform:translateY(-50%);
+}
+.ticket__stub{ border-bottom:1px dashed var(--line); padding-bottom:14px; display:flex; flex-direction:column; gap:8px; }
+.ticket__label{ font-family: var(--font-mono); font-size:11px; text-transform:uppercase; color: var(--text-faint); letter-spacing:0.08em; }
+.ticket__big{ font-family: var(--font-display); font-weight:700; font-size:22px; }
+.ticket__codeInput{
+  background: var(--bg-raised); border:1px solid var(--line); color: var(--lime);
+  font-family: var(--font-mono); font-size:24px; letter-spacing:0.3em;
+  padding:10px 12px; border-radius: var(--radius-s); width:100%; text-align:center;
+}
+.ticket__action{ width:100%; }
+.sessionCodeBanner{
+  font-family: var(--font-mono); font-size:13px; color: var(--lime);
+  background: var(--lime-dim); border:1px solid #C8FF4D44; border-radius:100px;
+  padding:8px 14px; display:inline-block; margin-bottom:14px;
+}
+
+/* ---------- Player roster ---------- */
+.playerAddForm{ display:flex; gap:14px; align-items:flex-start; margin-bottom:16px; flex-wrap:wrap; }
+.photoPicker{
+  width:72px; height:72px; border-radius:50%; border:1px dashed var(--line);
+  display:flex; align-items:center; justify-content:center; text-align:center;
+  font-size:11px; color: var(--text-faint); cursor:pointer; overflow:hidden; flex:0 0 auto;
+  background: var(--surface);
+}
+.photoPicker img{ width:100%; height:100%; object-fit:cover; }
+.playerAddForm__fields{ display:flex; gap:8px; flex-wrap:wrap; flex:1; min-width:200px; }
+.playerAddForm__fields input[type="text"]{ flex:2; min-width:120px; background: var(--surface); border:1px solid var(--line); color:var(--text); padding:10px 12px; border-radius: var(--radius-s); }
+.playerAddForm__fields select{ flex:1; min-width:110px; background: var(--surface); border:1px solid var(--line); color:var(--text); padding:10px 12px; border-radius: var(--radius-s); }
+
+.rosterGrid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(110px,1fr)); gap:12px; }
+.playerCard{
+  background: var(--surface); border:1px solid var(--line-soft); border-radius: var(--radius-m);
+  padding:12px 8px; display:flex; flex-direction:column; align-items:center; gap:6px;
+  cursor:pointer; text-align:center; position:relative;
+}
+.playerCard:hover{ border-color: var(--lime); }
+.playerCard__avatar{ width:56px; height:56px; border-radius:50%; object-fit:cover; background: var(--surface-2); }
+.playerCard__name{ font-size:13px; font-weight:600; }
+.playerCard__role{ font-size:10px; color: var(--text-faint); font-family: var(--font-mono); text-transform:uppercase; }
+.playerCard__remove{
+  position:absolute; top:4px; right:4px; background:none; border:none; color: var(--wicket);
+  font-size:14px; cursor:pointer; line-height:1;
+}
+
+/* ---------- Gallery ---------- */
+.gallery{ display:grid; grid-template-columns: repeat(auto-fill, minmax(84px,1fr)); gap:10px; }
+.gallery__item{ aspect-ratio:1; border-radius: var(--radius-s); overflow:hidden; background: var(--surface); }
+.gallery__item img{ width:100%; height:100%; object-fit:cover; }
+.gallery__empty{ color: var(--text-faint); font-size:13px; }
+
+/* ---------- Lineup picker (session setup) ---------- */
+.lineupPicker{ display:grid; grid-template-columns: repeat(auto-fill, minmax(90px,1fr)); gap:10px; margin-bottom:16px; }
+.lineupPicker .playerCard.is-picked{ border-color: var(--lime); background: var(--lime-dim); }
+.lineupChosen{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.lineupChosen span{ background: var(--surface-2); border:1px solid var(--line); border-radius:100px; padding:5px 10px; font-size:12px; }
+
+/* ---------- Player stat modal ---------- */
+.modalOverlay{
+  position:fixed; inset:0; background:#000a; z-index:200;
+  display:flex; align-items:flex-end; justify-content:center;
+}
+@media (min-width:640px){ .modalOverlay{ align-items:center; } }
+.modal{
+  background: var(--bg-raised); border:1px solid var(--line); width:100%; max-width:480px;
+  border-radius: 18px 18px 0 0; padding:20px; position:relative; max-height:80vh; overflow-y:auto;
+}
+@media (min-width:640px){ .modal{ border-radius: var(--radius-l); } }
+.modal__close{ position:absolute; top:12px; right:14px; background:none; border:none; color:var(--text-dim); font-size:22px; cursor:pointer; }
+.modal__head{ display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+.modal__head img{ width:56px; height:56px; border-radius:50%; object-fit:cover; }
+.modal__head h3{ margin:0; }
+.modal__tabs{ display:flex; gap:8px; margin-bottom:14px; }
+.modal__tabs button{ flex:1; background: var(--surface); border:1px solid var(--line); color:var(--text-dim); padding:8px; border-radius: var(--radius-s); cursor:pointer; font-weight:600; }
+.modal__tabs button.is-active{ color:var(--bg); background: var(--lime); border-color: var(--lime); }
+.statGrid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
+.statGrid .stat{ background: var(--surface); border:1px solid var(--line-soft); border-radius: var(--radius-s); padding:10px; text-align:center; }
+.statGrid .stat b{ display:block; font-family: var(--font-display); font-size:18px; color: var(--lime); }
+.statGrid .stat span{ font-size:10px; color: var(--text-faint); text-transform:uppercase; }
