@@ -343,11 +343,30 @@ select{min-width:110px}
         <div class="segmented"><button data-choice="bat">Chose to bat</button><button data-choice="bowl">Chose to bowl</button></div>
       </div>
 
-      <h2 style="margin-top:20px">Opening players</h2>
-      <div class="field"><label for="strikerSelect">Striker</label><select id="strikerSelect"></select></div>
-      <div class="field"><label for="nonStrikerSelect">Non-striker</label><select id="nonStrikerSelect"></select></div>
-      <div class="field"><label for="bowlerSelect">Opening bowler</label><select id="bowlerSelect"></select></div>
-      <p class="muted">No roster yet? Add players from the ⚙ Manage menu, or just type names into the boxes above the pickers next time — for now pick from your saved roster.</p>
+      <h2 style="margin-top:20px">Team A players</h2>
+      <p class="muted" style="margin:0 0 8px">Tick roster players who are playing for Team A, or add a name that isn't on your roster.</p>
+      <div id="teamARosterList" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+      <div class="fieldRow">
+        <input type="text" id="teamAAdHocInput" placeholder="Add a player by name" style="flex:1">
+        <button class="btn" id="addTeamAPlayerBtn" type="button">Add</button>
+      </div>
+      <div id="teamAChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+
+      <h2 style="margin-top:20px">Team B players</h2>
+      <p class="muted" style="margin:0 0 8px">Tick roster players who are playing for Team B, or add a name that isn't on your roster.</p>
+      <div id="teamBRosterList" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+      <div class="fieldRow">
+        <input type="text" id="teamBAdHocInput" placeholder="Add a player by name" style="flex:1">
+        <button class="btn" id="addTeamBPlayerBtn" type="button">Add</button>
+      </div>
+      <div id="teamBChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+
+      <label style="display:flex;align-items:center;gap:6px;margin:6px 0 20px">
+        <input type="checkbox" id="balanceBothTeamsCheck">
+        Add newly typed name to both teams (useful for balancing sides with a guest player)
+      </label>
+
+      <p class="muted">Opening striker, non-striker and bowler are chosen after the match starts, once teams are set.</p>
 
       <div class="panelActions">
         <button class="btn btn--ghost" data-nav="home">Cancel</button>
@@ -359,15 +378,37 @@ select{min-width:110px}
   <!-- ============ LIVE SCORING ============ -->
   <section class="view" id="view-live" data-view="live" hidden>
     <div class="sessionCodeBanner" id="liveCodeBanner"></div>
-
     <div class="liveInfoBar">
       <div class="oversText" id="oversText">Over 0.0</div>
       <div class="scoreText" id="scoreText">0/0</div>
       <div class="namesText" id="namesText">— vs —</div>
     </div>
-
     <div class="onCrease" id="onCrease"></div>
     <div class="ledStrip" id="ledStrip" aria-label="Ball by ball"></div>
+
+    <!-- Opening batters -->
+    <div class="setupCard" id="openerPanel" hidden style="margin-top:12px">
+      <h2>Select opening batters</h2>
+      <div class="field"><label for="liveStrikerSelect">Striker</label><select id="liveStrikerSelect"></select></div>
+      <div class="field"><label for="liveNonStrikerSelect">Non-striker</label><select id="liveNonStrikerSelect"></select></div>
+      <div class="panelActions"><button class="btn btn--primary" id="confirmOpenersBtn" type="button">Confirm openers</button></div>
+    </div>
+
+    <!-- Bowler (opening, and mandatory after every completed over) -->
+    <div class="setupCard" id="bowlerPanel" hidden style="margin-top:12px">
+      <h2>Select bowler</h2>
+      <div class="field"><label for="liveBowlerSelect">Bowler</label><select id="liveBowlerSelect"></select></div>
+      <p class="muted" id="bowlerHint">A bowler can't bowl two overs in a row.</p>
+      <div class="panelActions"><button class="btn btn--primary" id="confirmBowlerBtn" type="button">Confirm bowler</button></div>
+    </div>
+
+    <!-- Next batter after a wicket -->
+    <div class="setupCard" id="newBatsmanPanel" hidden style="margin-top:12px">
+      <h2>Next batter</h2>
+      <p class="muted" id="newBatsmanLabel"></p>
+      <div class="field"><label for="liveNewBatsmanSelect">Incoming batter</label><select id="liveNewBatsmanSelect"></select></div>
+      <div class="panelActions"><button class="btn btn--primary" id="confirmNewBatsmanBtn" type="button">Confirm batter</button></div>
+    </div>
 
     <div class="quickScore" id="quickScore" hidden>
       <button data-run="0">0</button><button data-run="1">1</button><button data-run="2">2</button>
@@ -378,8 +419,32 @@ select{min-width:110px}
       <button data-action="undo" class="qs--ghost">Undo last ball</button>
     </div>
 
-    <div class="viewerNote" id="viewerNote" hidden>You're watching this session live. Only the device that created it can score.</div>
+    <!-- Wicket dialog -->
+    <div id="wicketDialog" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50">
+      <div class="setupCard" style="max-width:360px;width:90%">
+        <h2>Wicket</h2>
+        <div class="field"><label for="wicketOutSelect">Who's out</label><select id="wicketOutSelect"></select></div>
+        <div class="field">
+          <label for="wicketTypeSelect">How out</label>
+          <select id="wicketTypeSelect">
+            <option value="bowled">Bowled</option>
+            <option value="caught">Caught</option>
+            <option value="lbw">LBW</option>
+            <option value="runout">Run out</option>
+            <option value="stumped">Stumped</option>
+            <option value="hitwicket">Hit wicket</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field"><label for="wicketFielderInput">Fielder (optional)</label><input type="text" id="wicketFielderInput" placeholder="e.g. name of catcher"></div>
+        <div class="panelActions">
+          <button class="btn btn--ghost" id="wicketCancelBtn" type="button">Cancel</button>
+          <button class="btn btn--primary" id="wicketConfirmBtn" type="button">Confirm wicket</button>
+        </div>
+      </div>
+    </div>
 
+    <div class="viewerNote" id="viewerNote" hidden>You're watching this session live. Only the device that created it can score.</div>
     <div class="panelActions">
       <button class="btn" id="viewScorecardBtn">Full scorecard</button>
       <button class="btn btn--primary" id="endInningsBtn" hidden>End match</button>
@@ -394,9 +459,7 @@ select{min-width:110px}
       <button class="btn btn--ghost" data-nav-back="1">Back</button>
     </div>
   </section>
-
 </div>
-
 <div class="toast" id="toast" hidden></div>
 
 <!-- Firebase (Spark/free tier — Firestore only, no Storage needed) -->
