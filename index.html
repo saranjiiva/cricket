@@ -336,12 +336,83 @@ select{min-width:110px}
       </div>
       <div class="field"><label for="oversInput">Overs per innings</label><input type="number" id="oversInput" min="1" max="50" value="20"></div>
 
-      <h2 style="margin-top:20px">Toss</h2>
-      <button class="coin" id="coinFlipBtn">🪙</button>
-      <div class="tossResult" id="tossResult" hidden>
-        <p><strong id="tossWinnerName"></strong> won the toss</p>
-        <div class="segmented"><button data-choice="bat">Chose to bat</button><button data-choice="bowl">Chose to bowl</button></div>
-      </div>
+     <h2 style="margin-top:20px;">Toss</h2>
+
+<div style="display:flex;justify-content:center;margin:20px 0;">
+
+    <button id="coinFlipBtn" type="button"
+        style="
+            width:120px;
+            height:120px;
+            border-radius:50%;
+            border:5px solid #FFD700;
+            cursor:pointer;
+            background:
+                radial-gradient(circle at 30% 30%,
+                #FFF8B0 0%,
+                #FFD54F 35%,
+                #F4B400 70%,
+                #C88719 100%);
+            color:#5A3900;
+            font-size:20px;
+            font-weight:bold;
+            font-family:Arial,sans-serif;
+            box-shadow:
+                0 0 20px rgba(255,215,0,.5),
+                inset 0 3px 8px rgba(255,255,255,.5),
+                inset 0 -4px 8px rgba(0,0,0,.35);
+            transition:transform .8s;
+        "
+
+        onclick="
+            this.style.transform='rotateY(1440deg)';
+            setTimeout(()=>this.style.transform='',800);
+        "
+    >
+        🏏
+    </button>
+
+</div>
+
+<div class="tossResult" id="tossResult" hidden>
+
+    <p style="text-align:center;font-size:18px;">
+        <strong id="tossWinnerName"></strong> won the toss
+    </p>
+
+    <div style="display:flex;justify-content:center;gap:15px;flex-wrap:wrap;">
+
+        <button data-choice="bat"
+            style="
+                padding:12px 25px;
+                border:none;
+                border-radius:30px;
+                background:#28a745;
+                color:white;
+                font-size:16px;
+                cursor:pointer;
+                font-weight:bold;
+            ">
+            🏏 Choose to Bat
+        </button>
+
+        <button data-choice="bowl"
+            style="
+                padding:12px 25px;
+                border:none;
+                border-radius:30px;
+                background:#007bff;
+                color:white;
+                font-size:16px;
+                cursor:pointer;
+                font-weight:bold;
+            ">
+            🎯 Choose to Bowl
+        </button>
+
+    </div>
+
+</div>
 
       <h2 style="margin-top:20px">Team A players</h2>
       <p class="muted" style="margin:0 0 8px">Tick roster players who are playing for Team A, or add a name that isn't on your roster.</p>
