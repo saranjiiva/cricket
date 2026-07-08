@@ -3,6 +3,21 @@
 // All state lives in Firestore (collections: players, gallery,
 // sessions). Every open tab/device subscribes with onSnapshot,
 // so a session updates live everywhere the code is entered.
+//
+// Match flow:
+//   1. Setup: team names, overs, toss, then build Team A / Team B
+//      player lists (from roster and/or free-typed names — a name
+//      can be added to both teams to balance sides).
+//   2. Live - openers: pick striker + non-striker for the batting
+//      team (decided by the toss).
+//   3. Live - bowler: pick the opening bowler. After every
+//      completed over (6 legal balls) the bowler is cleared and
+//      this step repeats — mandatory, and the previous over's
+//      bowler is excluded (can't bowl two overs running).
+//   4. Live - wicket: whenever a wicket falls, scoring is blocked
+//      until the next batter is chosen from the remaining team.
+//   5. Innings ends automatically when all overs are bowled or
+//      the batting side is all out.
 // ============================================================
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -17,7 +32,7 @@ function toast(msg) {
 }
 
 function uid() {
-  return (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) ;
+  return (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 }
 
 function resizeImageFile(file, maxDim = 300, quality = 0.72) {
@@ -110,10 +125,11 @@ function renderRoster() {
     card.querySelector('.cardDelete').addEventListener('click', () => db.collection('players').doc(p.id).delete());
     grid.appendChild(card);
   });
-  fillPlayerSelects();
+  // Setup screen's team pickers are roster-driven, keep them fresh too.
+  if (draft) renderTeamPlayerPickers();
 }
 function roleLabel(r) { return { bat: 'Batter', bowl: 'Bowler', all: 'All-rounder', wk: 'Wicketkeeper' }[r] || r; }
-function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function fallbackAvatar(name) {
   const initial = (name || '?')[0].toUpperCase();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231A4433"/><text x="32" y="40" font-size="26" fill="%23E8B33D" text-anchor="middle" font-family="Arial">${initial}</text></svg>`;
@@ -124,18 +140,6 @@ db.collection('players').orderBy('name').onSnapshot(snap => {
   rosterCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   renderRoster();
 });
-
-function fillPlayerSelects() {
-  ['strikerSelect', 'nonStrikerSelect', 'bowlerSelect'].forEach(id => {
-    const sel = $('#' + id);
-    if (!sel) return;
-    const current = sel.value;
-    sel.innerHTML = rosterCache.length
-      ? rosterCache.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`).join('')
-      : '<option value="">Add players in ⚙ Manage first</option>';
-    if (current) sel.value = current;
-  });
-}
 
 // ---------------- Gallery ----------------
 $('#galleryPhotoInput').addEventListener('change', async e => {
@@ -164,17 +168,24 @@ db.collection('gallery').orderBy('createdAt', 'desc').limit(60).onSnapshot(snap 
 // ---------------- Sessions: create / join / list ----------------
 function genCode() { return String(Math.floor(10000 + Math.random() * 90000)); }
 
-let draft = null; // { code, teamA, teamB, overs, toss:{winner,decision} }
+// draft = the setup-in-progress session, before it goes live.
+let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names] }
 
 $('#createSessionBtn').addEventListener('click', async () => {
   const code = genCode();
   const ownerToken = uid();
   localStorage.setItem('owner_' + code, ownerToken);
-  draft = { code, ownerToken };
+  draft = { code, ownerToken, teamAPlayers: [], teamBPlayers: [] };
+  tossWinner = null;
+  tossDecision = null;
   $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
   $('#tossResult').hidden = true;
-  $('#startMatchBtn').disabled = false;
-  fillPlayerSelects();
+  $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+  $('#teamAName').value = '';
+  $('#teamBName').value = '';
+  $('#oversInput').value = 20;
+  $('#balanceBothTeamsCheck').checked = false;
+  renderTeamPlayerPickers();
   await db.collection('sessions').doc(code).set({
     code,
     ownerToken,
@@ -194,7 +205,10 @@ async function openSessionByCode(code) {
   nav('live');
 }
 
+// ---------------- Setup: toss ----------------
 let tossWinner = null;
+let tossDecision = null;
+
 $('#coinFlipBtn').addEventListener('click', () => {
   const teamA = $('#teamAName').value.trim() || 'Team A';
   const teamB = $('#teamBName').value.trim() || 'Team B';
@@ -202,35 +216,144 @@ $('#coinFlipBtn').addEventListener('click', () => {
   $('#tossWinnerName').textContent = tossWinner;
   $('#tossResult').hidden = false;
 });
-let tossDecision = null;
 $$('#tossResult .segmented button').forEach(b => b.addEventListener('click', () => {
   tossDecision = b.dataset.choice;
   $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
   b.classList.add('is-active');
 }));
 
+// ---------------- Setup: team player pickers ----------------
+function renderTeamPlayerPickers() {
+  if (!draft) return;
+  const rosterAList = $('#teamARosterList');
+  const rosterBList = $('#teamBRosterList');
+  const rosterOptionHtml = (team) => rosterCache.length
+    ? rosterCache.map(p => `
+        <label style="display:inline-flex;align-items:center;gap:6px;background:#f2f2f2;border-radius:14px;padding:4px 10px;font-size:13px;cursor:pointer">
+          <input type="checkbox" data-roster-team="${team}" value="${escapeHtml(p.name)}" ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}>
+          ${escapeHtml(p.name)}
+        </label>`).join('')
+    : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
+  rosterAList.innerHTML = rosterOptionHtml('A');
+  rosterBList.innerHTML = rosterOptionHtml('B');
+  renderTeamChips();
+}
+
+function renderTeamChips() {
+  const chip = (name, team) => `
+    <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
+      ${escapeHtml(name)}
+      <button type="button" data-remove-${team.toLowerCase()}="${escapeHtml(name)}" style="border:none;background:transparent;cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
+    </span>`;
+  $('#teamAChips').innerHTML = draft.teamAPlayers.length
+    ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
+    : '<span class="muted">No players added yet</span>';
+  $('#teamBChips').innerHTML = draft.teamBPlayers.length
+    ? draft.teamBPlayers.map(n => chip(n, 'B')).join('')
+    : '<span class="muted">No players added yet</span>';
+}
+
+function toggleTeamPlayer(team, name, checked) {
+  const list = draft['team' + team + 'Players'];
+  const idx = list.indexOf(name);
+  if (checked && idx === -1) list.push(name);
+  if (!checked && idx > -1) list.splice(idx, 1);
+  renderTeamChips();
+}
+
+$('#teamARosterList').addEventListener('change', e => {
+  const cb = e.target.closest('input[type=checkbox]');
+  if (!cb) return;
+  toggleTeamPlayer('A', cb.value, cb.checked);
+});
+$('#teamBRosterList').addEventListener('change', e => {
+  const cb = e.target.closest('input[type=checkbox]');
+  if (!cb) return;
+  toggleTeamPlayer('B', cb.value, cb.checked);
+});
+
+function removeTeamPlayer(team, name) {
+  const list = draft['team' + team + 'Players'];
+  const idx = list.indexOf(name);
+  if (idx > -1) list.splice(idx, 1);
+  const cb = $(`input[data-roster-team="${team}"][value="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = false;
+  renderTeamChips();
+}
+
+$('#teamAChips').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-remove-a]');
+  if (!btn) return;
+  removeTeamPlayer('A', btn.dataset.removeA);
+});
+$('#teamBChips').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-remove-b]');
+  if (!btn) return;
+  removeTeamPlayer('B', btn.dataset.removeB);
+});
+
+$('#addTeamAPlayerBtn').addEventListener('click', () => {
+  const input = $('#teamAAdHocInput');
+  const name = input.value.trim();
+  if (!name) return;
+  const both = $('#balanceBothTeamsCheck').checked;
+  if (!draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
+  if (both && !draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
+  input.value = '';
+  renderTeamChips();
+});
+$('#addTeamBPlayerBtn').addEventListener('click', () => {
+  const input = $('#teamBAdHocInput');
+  const name = input.value.trim();
+  if (!name) return;
+  const both = $('#balanceBothTeamsCheck').checked;
+  if (!draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
+  if (both && !draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
+  input.value = '';
+  renderTeamChips();
+});
+
+// ---------------- Setup: start match ----------------
 $('#startMatchBtn').addEventListener('click', async () => {
   const teamA = $('#teamAName').value.trim() || 'Team A';
   const teamB = $('#teamBName').value.trim() || 'Team B';
   const overs = parseInt($('#oversInput').value, 10) || 20;
-  const striker = $('#strikerSelect').value;
-  const nonStriker = $('#nonStrikerSelect').value;
-  const bowler = $('#bowlerSelect').value;
-  if (!striker || !nonStriker || !bowler) { toast('Pick opening players first'); return; }
-  if (striker === nonStriker) { toast('Striker and non-striker must differ'); return; }
+
+  if (draft.teamAPlayers.length < 2) { toast(`Add at least 2 players to ${teamA}`); return; }
+  if (draft.teamBPlayers.length < 2) { toast(`Add at least 2 players to ${teamB}`); return; }
+  if (!tossWinner) { toast('Flip the coin to decide the toss first'); return; }
+  if (!tossDecision) { toast('Pick bat or bowl after the toss'); return; }
+
+  const winnerIsA = tossWinner === teamA;
+  const battingTeam = (tossDecision === 'bat')
+    ? (winnerIsA ? 'A' : 'B')
+    : (winnerIsA ? 'B' : 'A');
+  const bowlingTeam = battingTeam === 'A' ? 'B' : 'A';
+
   await db.collection('sessions').doc(draft.code).update({
     teamA, teamB, overs,
-    toss: { winner: tossWinner || teamA, decision: tossDecision || 'bat' },
-    striker, nonStriker, bowler,
+    toss: { winner: tossWinner, decision: tossDecision },
+    teamAPlayers: draft.teamAPlayers,
+    teamBPlayers: draft.teamBPlayers,
+    battingTeam, bowlingTeam,
+    striker: null,
+    nonStriker: null,
+    bowler: null,
+    lastOverBowler: null,
+    needNewBatsman: false,
+    outSlot: null,
     score: { runs: 0, wickets: 0, balls: 0 },
     log: [],
+    battingStats: {},
+    bowlingStats: {},
+    dismissedPlayers: [],
     status: 'live',
   });
   watchSession(draft.code);
   nav('live');
 });
 
-// ---------------- Live session watching + scoring ----------------
+// ---------------- Live session watching ----------------
 let currentCode = null, currentUnsub = null, currentData = null, isOwner = false;
 
 function watchSession(code) {
@@ -244,6 +367,13 @@ function watchSession(code) {
   });
 }
 
+function populateSelect(sel, names) {
+  const el = typeof sel === 'string' ? $(sel) : sel;
+  el.innerHTML = names.length
+    ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
+    : '<option value="">No players available</option>';
+}
+
 function renderLive() {
   const d = currentData;
   $('#liveCodeBanner').textContent = `Session code  ${currentCode.split('').join(' ')}`;
@@ -251,7 +381,9 @@ function renderLive() {
   $('#oversText').textContent = `Over ${Math.floor(balls / 6)}.${balls % 6} of ${d.overs}`;
   $('#scoreText').textContent = `${d.score?.runs || 0}/${d.score?.wickets || 0}`;
   $('#namesText').textContent = `${d.teamA} vs ${d.teamB}`;
-  $('#onCrease').innerHTML = `<span>🏏 <b>${escapeHtml(d.striker || '')}</b>*</span><span>${escapeHtml(d.nonStriker || '')}</span><span>Bowler: <b>${escapeHtml(d.bowler || '')}</b></span>`;
+  $('#onCrease').innerHTML = d.striker
+    ? `<span>🏏 <b>${escapeHtml(d.striker)}</b>${d.striker && !d.needNewBatsman ? '*' : ''}</span><span>${escapeHtml(d.nonStriker || '')}</span><span>Bowler: <b>${escapeHtml(d.bowler || '—')}</b></span>`
+    : '<span class="muted">Waiting for openers…</span>';
 
   const strip = $('#ledStrip');
   strip.innerHTML = '';
@@ -263,36 +395,200 @@ function renderLive() {
   });
 
   const live = d.status === 'live';
-  $('#quickScore').hidden = !(isOwner && live);
+  const battingPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+  const bowlingPlayers = (d.battingTeam === 'A' ? d.teamBPlayers : d.teamAPlayers) || [];
+
+  const needOpeners = live && (!d.striker || !d.nonStriker);
+  const needBatsman = live && !needOpeners && !!d.needNewBatsman;
+  const needBowler = live && !needOpeners && !needBatsman && !d.bowler;
+  const readyToScore = live && !needOpeners && !needBatsman && !needBowler;
+
+  $('#openerPanel').hidden = !(isOwner && needOpeners);
+  $('#newBatsmanPanel').hidden = !(isOwner && needBatsman);
+  $('#bowlerPanel').hidden = !(isOwner && needBowler);
+  $('#quickScore').hidden = !(isOwner && readyToScore);
   $('#endInningsBtn').hidden = !(isOwner && live);
   $('#viewerNote').hidden = isOwner;
+
+  if (isOwner && needOpeners) {
+    populateSelect('#liveStrikerSelect', battingPlayers);
+    populateSelect('#liveNonStrikerSelect', battingPlayers);
+  }
+  if (isOwner && needBatsman) {
+    const dismissed = d.dismissedPlayers || [];
+    const otherOnCrease = d.outSlot === 'striker' ? d.nonStriker : d.striker;
+    const outgoing = d.outSlot === 'striker' ? d.striker : d.nonStriker;
+    const remaining = battingPlayers.filter(p => !dismissed.includes(p) && p !== otherOnCrease);
+    $('#newBatsmanLabel').textContent = `${outgoing || 'Batter'} is out — pick the next batter`;
+    populateSelect('#liveNewBatsmanSelect', remaining);
+  }
+  if (isOwner && needBowler) {
+    let options = bowlingPlayers;
+    if (d.lastOverBowler && bowlingPlayers.length > 1) {
+      options = bowlingPlayers.filter(p => p !== d.lastOverBowler);
+    }
+    populateSelect('#liveBowlerSelect', options);
+    $('#bowlerHint').textContent = d.lastOverBowler
+      ? `${d.lastOverBowler} just finished an over and can't bowl the next one.`
+      : `A bowler can't bowl two overs in a row.`;
+  }
 }
 
-function makeLogEntry({ r = 0, extra = null, wicket = false }) {
-  const legal = !(extra === 'wd' || extra === 'nb');
-  const runsAdded = extra ? 1 : r;
-  return { r: runsAdded, extra, wicket, legal, ts: Date.now() };
+// ---------------- Live: openers / bowler / next batter ----------------
+$('#confirmOpenersBtn').addEventListener('click', async () => {
+  const striker = $('#liveStrikerSelect').value;
+  const nonStriker = $('#liveNonStrikerSelect').value;
+  if (!striker || !nonStriker || striker === nonStriker) { toast('Pick two different openers'); return; }
+  await db.collection('sessions').doc(currentCode).update({ striker, nonStriker });
+});
+
+$('#confirmBowlerBtn').addEventListener('click', async () => {
+  const bowler = $('#liveBowlerSelect').value;
+  if (!bowler) { toast('Pick a bowler'); return; }
+  await db.collection('sessions').doc(currentCode).update({ bowler });
+});
+
+$('#confirmNewBatsmanBtn').addEventListener('click', async () => {
+  const name = $('#liveNewBatsmanSelect').value;
+  if (!name) { toast('Pick the next batter'); return; }
+  const d = currentData;
+  const update = { needNewBatsman: false, outSlot: null };
+  if (d.outSlot === 'striker') update.striker = name; else update.nonStriker = name;
+  await db.collection('sessions').doc(currentCode).update(update);
+});
+
+// ---------------- Live: scoring ----------------
+function ensureBatter(stats, name) {
+  if (!stats[name]) stats[name] = { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
+}
+function ensureBowler(stats, name) {
+  if (!stats[name]) stats[name] = { balls: 0, runs: 0, wickets: 0, wides: 0, noballs: 0 };
+}
+function formatDismissal(type, bowler, fielder) {
+  fielder = (fielder || '').trim();
+  switch (type) {
+    case 'bowled': return `b ${bowler}`;
+    case 'caught': return fielder ? `c ${fielder} b ${bowler}` : `c & b ${bowler}`;
+    case 'lbw': return `lbw b ${bowler}`;
+    case 'runout': return fielder ? `run out (${fielder})` : 'run out';
+    case 'stumped': return fielder ? `st ${fielder} b ${bowler}` : `st b ${bowler}`;
+    case 'hitwicket': return `hit wicket b ${bowler}`;
+    default: return 'out';
+  }
 }
 
 async function recordBall(opts) {
   if (!isOwner || !currentCode) return;
-  const entry = makeLogEntry(opts);
   const ref = db.collection('sessions').doc(currentCode);
   await db.runTransaction(async tx => {
     const doc = await tx.get(ref);
     const d = doc.data();
+    if (d.status !== 'live' || !d.striker || !d.nonStriker || !d.bowler || d.needNewBatsman) return;
+
+    // Snapshot everything this ball will touch, so undo can restore it exactly.
+    const prev = {
+      score: d.score,
+      striker: d.striker,
+      nonStriker: d.nonStriker,
+      bowler: d.bowler,
+      lastOverBowler: d.lastOverBowler || null,
+      needNewBatsman: d.needNewBatsman || false,
+      outSlot: d.outSlot || null,
+      battingStats: d.battingStats || {},
+      bowlingStats: d.bowlingStats || {},
+      dismissedPlayers: d.dismissedPlayers || [],
+      status: d.status,
+    };
+
     const score = { ...d.score };
+    const battingStats = JSON.parse(JSON.stringify(d.battingStats || {}));
+    const bowlingStats = JSON.parse(JSON.stringify(d.bowlingStats || {}));
+    let dismissedPlayers = [...(d.dismissedPlayers || [])];
+
+    const strikerName = d.striker, bowlerName = d.bowler;
+    ensureBatter(battingStats, strikerName);
+    ensureBowler(bowlingStats, bowlerName);
+
+    const legal = !(opts.extra === 'wd' || opts.extra === 'nb');
+    const runsAdded = opts.extra ? 1 : (opts.r || 0);
+    const entry = {
+      r: runsAdded, extra: opts.extra || null, wicket: !!opts.wicket, legal,
+      ts: Date.now(), batter: strikerName, bowler: bowlerName,
+    };
+
     score.runs += entry.r;
     if (entry.legal) score.balls += 1;
-    if (entry.wicket) score.wickets += 1;
-    let { striker, nonStriker } = d;
+
+    if (!entry.extra) {
+      battingStats[strikerName].runs += entry.r;
+      battingStats[strikerName].balls += 1;
+      if (entry.r === 4) battingStats[strikerName].fours += 1;
+      if (entry.r === 6) battingStats[strikerName].sixes += 1;
+    } else if (entry.extra === 'b' || entry.extra === 'lb') {
+      battingStats[strikerName].balls += 1;
+    }
+
+    bowlingStats[bowlerName].runs += entry.r;
+    if (entry.legal) bowlingStats[bowlerName].balls += 1;
+    if (entry.extra === 'wd') bowlingStats[bowlerName].wides = (bowlingStats[bowlerName].wides || 0) + 1;
+    if (entry.extra === 'nb') bowlingStats[bowlerName].noballs = (bowlingStats[bowlerName].noballs || 0) + 1;
+
+    let needNewBatsman = false, outSlot = null;
+    if (entry.wicket) {
+      score.wickets += 1;
+      const slot = opts.outSlot === 'nonStriker' ? 'nonStriker' : 'striker';
+      const outPlayerName = slot === 'striker' ? d.striker : d.nonStriker;
+      ensureBatter(battingStats, outPlayerName);
+      battingStats[outPlayerName].out = true;
+      battingStats[outPlayerName].dismissal = formatDismissal(opts.dismissalType, bowlerName, opts.fielder);
+      bowlingStats[bowlerName].wickets = (bowlingStats[bowlerName].wickets || 0) + 1;
+      dismissedPlayers.push(outPlayerName);
+      entry.outPlayer = outPlayerName;
+      entry.dismissal = battingStats[outPlayerName].dismissal;
+
+      const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+      const otherOnCrease = slot === 'striker' ? d.nonStriker : d.striker;
+      const remaining = battingTeamPlayers.filter(p => !dismissedPlayers.includes(p) && p !== otherOnCrease);
+      if (remaining.length > 0) { needNewBatsman = true; outSlot = slot; }
+    }
+
+    let newStriker = d.striker, newNonStriker = d.nonStriker;
     let swapped = false;
-    const battingRunsOdd = !entry.extra && entry.r % 2 === 1;
-    if (battingRunsOdd) { [striker, nonStriker] = [nonStriker, striker]; swapped = true; }
-    if (entry.legal && score.balls % 6 === 0) { [striker, nonStriker] = [nonStriker, striker]; swapped = !swapped ? true : false; }
+    if (!entry.wicket && !entry.extra && entry.r % 2 === 1) {
+      [newStriker, newNonStriker] = [newNonStriker, newStriker];
+      swapped = true;
+    }
+
+    let newBowler = d.bowler, lastOverBowler = d.lastOverBowler || null;
+    if (entry.legal && score.balls > 0 && score.balls % 6 === 0) {
+      [newStriker, newNonStriker] = [newNonStriker, newStriker];
+      swapped = !swapped;
+      lastOverBowler = d.bowler;
+      newBowler = null; // forces the mandatory bowler-change panel
+    }
     entry.swapped = swapped;
+    entry.prev = prev;
+
     const log = [...(d.log || []), entry];
-    tx.update(ref, { score, log, striker, nonStriker });
+
+    // Innings ends automatically: all overs bowled, or all out.
+    const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+    let status = d.status;
+    if (score.balls >= d.overs * 6) status = 'ended';
+    if (entry.wicket && needNewBatsman === false && dismissedPlayers.length >= battingTeamPlayers.length - 1) {
+      // fewer than 2 players left to bat = all out
+      status = 'ended';
+    }
+
+    tx.update(ref, {
+      score, log, battingStats, bowlingStats, dismissedPlayers,
+      striker: newStriker, nonStriker: newNonStriker,
+      bowler: status === 'ended' ? d.bowler : newBowler,
+      lastOverBowler,
+      needNewBatsman: status === 'ended' ? false : needNewBatsman,
+      outSlot: status === 'ended' ? null : outSlot,
+      status,
+    });
   });
 }
 
@@ -304,14 +600,22 @@ async function undoLastBall() {
     const d = doc.data();
     const log = [...(d.log || [])];
     const entry = log.pop();
-    if (!entry) return;
-    const score = { ...d.score };
-    score.runs -= entry.r;
-    if (entry.legal) score.balls -= 1;
-    if (entry.wicket) score.wickets -= 1;
-    let { striker, nonStriker } = d;
-    if (entry.swapped) [striker, nonStriker] = [nonStriker, striker];
-    tx.update(ref, { score, log, striker, nonStriker });
+    if (!entry || !entry.prev) return;
+    const p = entry.prev;
+    tx.update(ref, {
+      log,
+      score: p.score,
+      striker: p.striker,
+      nonStriker: p.nonStriker,
+      bowler: p.bowler,
+      lastOverBowler: p.lastOverBowler,
+      needNewBatsman: p.needNewBatsman,
+      outSlot: p.outSlot,
+      battingStats: p.battingStats,
+      bowlingStats: p.bowlingStats,
+      dismissedPlayers: p.dismissedPlayers,
+      status: p.status,
+    });
   });
 }
 
@@ -320,8 +624,27 @@ $('#quickScore').addEventListener('click', e => {
   if (!btn) return;
   if (btn.dataset.run !== undefined) recordBall({ r: parseInt(btn.dataset.run, 10) });
   else if (btn.dataset.extra) recordBall({ extra: btn.dataset.extra });
-  else if (btn.dataset.wicket) recordBall({ wicket: true });
+  else if (btn.dataset.wicket) openWicketDialog();
   else if (btn.dataset.action === 'undo') undoLastBall();
+});
+
+// ---------------- Wicket dialog ----------------
+function openWicketDialog() {
+  const d = currentData;
+  $('#wicketOutSelect').innerHTML = `
+    <option value="striker">${escapeHtml(d.striker)} (striker)</option>
+    <option value="nonStriker">${escapeHtml(d.nonStriker)} (non-striker)</option>`;
+  $('#wicketTypeSelect').value = 'bowled';
+  $('#wicketFielderInput').value = '';
+  $('#wicketDialog').hidden = false;
+}
+$('#wicketCancelBtn').addEventListener('click', () => { $('#wicketDialog').hidden = true; });
+$('#wicketConfirmBtn').addEventListener('click', () => {
+  const outSlot = $('#wicketOutSelect').value;
+  const dismissalType = $('#wicketTypeSelect').value;
+  const fielder = $('#wicketFielderInput').value.trim();
+  $('#wicketDialog').hidden = true;
+  recordBall({ wicket: true, outSlot, dismissalType, fielder });
 });
 
 $('#endInningsBtn').addEventListener('click', async () => {
@@ -334,15 +657,73 @@ $('#viewScorecardBtn').addEventListener('click', () => {
   const d = currentData;
   $('#scorecardTitle').textContent = `${d.teamA} vs ${d.teamB}`;
   const balls = d.score?.balls || 0;
-  const rows = (d.log || []).map((e, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${e.wicket ? 'Wicket' : e.extra ? e.extra.toUpperCase() : e.r + ' run' + (e.r === 1 ? '' : 's')}</td>
-    </tr>`).join('');
+  const log = d.log || [];
+  const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+  const battingStats = d.battingStats || {};
+  const bowlingStats = d.bowlingStats || {};
+
+  // Batting order = order players first appear on strike in the log.
+  const battedOrder = [];
+  log.forEach(e => { if (e.batter && !battedOrder.includes(e.batter)) battedOrder.push(e.batter); });
+  [d.striker, d.nonStriker].forEach(n => { if (n && !battedOrder.includes(n)) battedOrder.push(n); });
+
+  const battingRows = battedOrder.map(name => {
+    const s = battingStats[name] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
+    const sr = s.balls ? ((s.runs / s.balls) * 100).toFixed(2) : '0.00';
+    const status = s.out
+      ? escapeHtml(s.dismissal || 'out')
+      : (name === d.striker || name === d.nonStriker ? 'not out' : '');
+    return `<tr><td>${escapeHtml(name)}</td><td class="muted">${status}</td><td>${s.runs}</td><td>${s.balls}</td><td>${s.fours}</td><td>${s.sixes}</td><td>${sr}</td></tr>`;
+  }).join('');
+
+  const yetToBat = battingTeamPlayers.filter(p => !battedOrder.includes(p));
+
+  const extrasRuns = log.filter(e => e.extra).reduce((sum, e) => sum + e.r, 0);
+  const wides = log.filter(e => e.extra === 'wd').reduce((s, e) => s + e.r, 0);
+  const noballs = log.filter(e => e.extra === 'nb').reduce((s, e) => s + e.r, 0);
+  const byes = log.filter(e => e.extra === 'b').reduce((s, e) => s + e.r, 0);
+  const legbyes = log.filter(e => e.extra === 'lb').reduce((s, e) => s + e.r, 0);
+
+  const bowlingRows = Object.keys(bowlingStats).map(name => {
+    const s = bowlingStats[name];
+    const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
+    const eco = s.balls ? (s.runs / (s.balls / 6)).toFixed(2) : '0.00';
+    return `<tr><td>${escapeHtml(name)}</td><td>${overs}</td><td>${s.runs}</td><td>${s.wickets}</td><td>${s.noballs || 0}</td><td>${s.wides || 0}</td><td>${eco}</td></tr>`;
+  }).join('');
+
+  let runTotal = 0, ballTotal = 0, wktCount = 0;
+  const fow = [];
+  log.forEach(e => {
+    runTotal += e.r;
+    if (e.legal) ballTotal += 1;
+    if (e.wicket) {
+      wktCount += 1;
+      fow.push({ name: e.outPlayer, score: runTotal, wkt: wktCount, over: `${Math.floor(ballTotal / 6)}.${ballTotal % 6}` });
+    }
+  });
+  const fowHtml = fow.map(w => `<tr><td>${escapeHtml(w.name)}</td><td>${w.score}-${w.wkt}</td><td>${w.over}</td></tr>`).join('');
+
+  const runRate = balls ? ((d.score.runs || 0) / (balls / 6)).toFixed(2) : '0.00';
+
   $('#scorecardBody').innerHTML = `
-    <p><strong>${d.score?.runs || 0}/${d.score?.wickets || 0}</strong> after ${Math.floor(balls / 6)}.${balls % 6} overs (of ${d.overs})</p>
     <p class="muted">Toss: ${d.toss ? `${escapeHtml(d.toss.winner)} chose to ${d.toss.decision}` : '—'}</p>
-    <table><thead><tr><th>Ball</th><th>Outcome</th></tr></thead><tbody>${rows || '<tr><td colspan="2">No balls bowled yet</td></tr>'}</tbody></table>`;
+    <table>
+      <thead><tr><th>Batter</th><th></th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead>
+      <tbody>${battingRows || '<tr><td colspan="7">No batters yet</td></tr>'}</tbody>
+    </table>
+    <p><strong>Extras</strong> ${extrasRuns} (b ${byes}, lb ${legbyes}, w ${wides}, nb ${noballs})</p>
+    <p><strong>Total</strong> ${d.score?.runs || 0}-${d.score?.wickets || 0} (${Math.floor(balls / 6)}.${balls % 6} overs, RR: ${runRate})</p>
+    ${yetToBat.length ? `<p class="muted"><strong>Yet to bat</strong> ${yetToBat.map(escapeHtml).join(', ')}</p>` : ''}
+    <table>
+      <thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>NB</th><th>WD</th><th>ECO</th></tr></thead>
+      <tbody>${bowlingRows || '<tr><td colspan="7">No overs bowled yet</td></tr>'}</tbody>
+    </table>
+    ${fow.length ? `
+      <table>
+        <thead><tr><th>Fall of Wickets</th><th>Score</th><th>Over</th></tr></thead>
+        <tbody>${fowHtml}</tbody>
+      </table>` : ''}
+  `;
   nav('scorecard');
 });
 
