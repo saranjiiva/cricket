@@ -227,13 +227,47 @@ function renderTeamPlayerPickers() {
   if (!draft) return;
   const rosterAList = $('#teamARosterList');
   const rosterBList = $('#teamBRosterList');
-  const rosterOptionHtml = (team) => rosterCache.length
-    ? rosterCache.map(p => `
-        <label style="display:inline-flex;align-items:center;gap:6px;background:#f2f2f2;border-radius:14px;padding:4px 10px;font-size:13px;cursor:pointer">
-          <input type="checkbox" data-roster-team="${team}" value="${escapeHtml(p.name)}" ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}>
-          ${escapeHtml(p.name)}
-        </label>`).join('')
-    : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
+ const rosterOptionHtml = (team) => rosterCache.length
+  ? rosterCache.map(p => `
+      <label style="
+          display:flex;
+          align-items:center;
+          gap:10px;
+          padding:8px 12px;
+          margin-bottom:8px;
+          background:var(--pitch-800);
+          border:1px solid var(--line);
+          border-radius:10px;
+          cursor:pointer;
+          color:var(--cream);
+      ">
+          <input
+              type="checkbox"
+              data-roster-team="${team}"
+              value="${escapeHtml(p.name)}"
+              ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}
+          >
+
+          <img
+              src="${p.photo || fallbackAvatar(p.name)}"
+              style="
+                  width:36px;
+                  height:36px;
+                  border-radius:50%;
+                  object-fit:cover;
+                  border:1px solid var(--line);
+              "
+          >
+
+          <div style="display:flex;flex-direction:column;">
+              <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+              <small style="color:var(--gold);font-size:11px;">
+                  ${roleLabel(p.role)}
+              </small>
+          </div>
+      </label>
+  `).join('')
+  : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
   rosterAList.innerHTML = rosterOptionHtml('A');
   rosterBList.innerHTML = rosterOptionHtml('B');
   renderTeamChips();
