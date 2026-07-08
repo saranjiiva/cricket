@@ -4,12 +4,235 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta name="theme-color" content="#0B1F17">
-<title>CricketScore — Local Session Scorer</title>
+<title>CricketScore — Live Session Scorer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles/main.css">
-<link rel="stylesheet" href="styles/players.css">
-<link rel="stylesheet" href="styles/scoreboard.css">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TOKENS — pitch green base, floodlight-gold accent,
+   scoreboard flip-card as the signature element
+   ============================================================ */
+:root{
+  --pitch-950:#071510;
+  --pitch-900:#0B1F17;
+  --pitch-800:#123024;
+  --pitch-700:#1A4433;
+  --line:#24503C;
+  --cream:#F1EDE1;
+  --cream-dim:#C9CFC5;
+  --gold:#E8B33D;
+  --gold-bright:#FFD469;
+  --run4:#4FA8E0;
+  --run6:#E8B33D;
+  --wicket:#E0584F;
+  --wide:#7DD3A0;
+  --radius:14px;
+  --radius-sm:8px;
+  --disp:'Rajdhani',sans-serif;
+  --body:'Inter',sans-serif;
+  --mono:'JetBrains Mono',monospace;
+  --shadow:0 8px 30px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:
+    radial-gradient(1200px 600px at 50% -10%, #123024 0%, var(--pitch-900) 55%, var(--pitch-950) 100%);
+  color:var(--cream);
+  font-family:var(--body);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{font-family:var(--disp);font-weight:700;letter-spacing:.01em;margin:0 0 .4em}
+::selection{background:var(--gold);color:var(--pitch-950)}
+button{font-family:var(--body);cursor:pointer}
+input,select{font-family:var(--body)}
+.muted{color:var(--cream-dim);font-size:.85rem}
+#app{max-width:820px;margin:0 auto;padding:0 18px 60px}
+
+/* ---------- topbar ---------- */
+.topbar{
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 18px;margin:0 -18px;
+  background:linear-gradient(180deg, rgba(7,21,16,.96), rgba(7,21,16,.85));
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);
+}
+.topbar__brand{font-family:var(--disp);font-size:1.35rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.topbar__brand em{font-style:normal;color:var(--gold)}
+.topbar__seam{width:16px;height:16px;border-radius:50%;background:
+  repeating-linear-gradient(45deg, var(--cream) 0 2px, transparent 2px 4px);
+  background-color:#c0392b;display:inline-block;box-shadow:inset 0 0 0 1px rgba(0,0,0,.3)}
+.topbar__actions{display:flex;gap:8px}
+.iconbtn{
+  background:var(--pitch-800);border:1px solid var(--line);color:var(--cream);
+  width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:1.1rem;transition:.15s;
+}
+.iconbtn:hover{background:var(--pitch-700);border-color:var(--gold)}
+.iconbtn.is-active{background:var(--gold);color:var(--pitch-950);border-color:var(--gold)}
+
+/* ---------- manage drawer (players + gallery, collapsible) ---------- */
+.manageDrawer{
+  overflow:hidden;max-height:0;transition:max-height .35s ease;
+  background:var(--pitch-800);border-bottom:1px solid var(--line);
+  margin:0 -18px;
+}
+.manageDrawer.is-open{max-height:2000px}
+.manageDrawer__inner{padding:18px}
+.tabs{display:flex;gap:8px;margin-bottom:16px}
+.tabs button{
+  flex:1;padding:10px;border-radius:var(--radius-sm);border:1px solid var(--line);
+  background:transparent;color:var(--cream-dim);font-weight:600;
+}
+.tabs button.is-active{background:var(--gold);color:var(--pitch-950);border-color:var(--gold)}
+.tabPanel{display:none}
+.tabPanel.is-active{display:block}
+
+.playerAddForm{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;padding:14px;background:var(--pitch-900);border-radius:var(--radius);border:1px solid var(--line)}
+.photoPicker{
+  width:56px;height:56px;border-radius:50%;border:2px dashed var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:.7rem;text-align:center;
+  color:var(--cream-dim);overflow:hidden;flex-shrink:0;background:var(--pitch-800);
+}
+.photoPicker img{width:100%;height:100%;object-fit:cover}
+.playerAddForm__fields{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+input[type=text],input[type=number],select{
+  background:var(--pitch-900);border:1px solid var(--line);color:var(--cream);
+  padding:10px 12px;border-radius:var(--radius-sm);font-size:.92rem;
+}
+select{min-width:110px}
+.btn{
+  padding:10px 18px;border-radius:999px;border:1px solid var(--line);background:transparent;
+  color:var(--cream);font-weight:600;font-size:.9rem;transition:.15s;
+}
+.btn--primary{background:var(--gold);color:var(--pitch-950);border-color:var(--gold)}
+.btn--primary:hover{background:var(--gold-bright)}
+.btn--ghost{background:transparent}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+.rosterGrid,.galleryGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:12px}
+.playerCard{text-align:center;position:relative}
+.playerCard__photo{width:64px;height:64px;border-radius:50%;object-fit:cover;background:var(--pitch-700);border:2px solid var(--line);margin-bottom:4px}
+.playerCard__name{font-size:.78rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.playerCard__role{font-size:.68rem;color:var(--gold)}
+.cardDelete{
+  position:absolute;top:-4px;right:6px;background:var(--wicket);color:#fff;border:none;
+  width:18px;height:18px;border-radius:50%;font-size:.7rem;line-height:1;
+}
+.galleryUpload{margin-bottom:14px}
+.galleryUpload input{display:none}
+.galleryUpload label{display:inline-block}
+.galleryItem{position:relative;aspect-ratio:1;border-radius:var(--radius-sm);overflow:hidden;background:var(--pitch-700)}
+.galleryItem img{width:100%;height:100%;object-fit:cover}
+
+/* ---------- views ---------- */
+.view{padding-top:8px}
+.hero{padding:34px 0 20px;text-align:center}
+.hero__title{font-size:2.3rem;line-height:1.05;margin-bottom:10px}
+.hero__title em{font-style:normal;color:var(--gold)}
+.hero__sub{color:var(--cream-dim);max-width:480px;margin:0 auto}
+
+/* signature: live flip scoreboard mock in hero */
+.scoreDemo{
+  display:flex;justify-content:center;gap:6px;margin:26px 0;font-family:var(--mono);
+}
+.flip{
+  background:linear-gradient(180deg,#12261c,#0c1c14);border:1px solid var(--line);
+  border-radius:6px;width:38px;height:52px;display:flex;align-items:center;justify-content:center;
+  font-size:1.6rem;font-weight:700;color:var(--gold-bright);position:relative;box-shadow:var(--shadow);
+}
+.flip::after{content:'';position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(0,0,0,.5)}
+
+.ticketRow{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:30px}
+@media (max-width:560px){.ticketRow{grid-template-columns:1fr}}
+.ticket{
+  background:var(--pitch-800);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px;display:flex;flex-direction:column;gap:12px;box-shadow:var(--shadow);
+}
+.ticket__label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--gold)}
+.ticket__big{display:block;font-family:var(--disp);font-size:1.25rem;font-weight:700;margin-top:2px}
+.ticket__codeInput{
+  width:100%;margin-top:8px;font-family:var(--mono);font-size:1.3rem;letter-spacing:.3em;
+  text-align:center;background:var(--pitch-900);border:1px solid var(--line);color:var(--gold-bright);
+  padding:10px;border-radius:var(--radius-sm);
+}
+.ticket__action{margin-top:auto}
+
+.sectionHead{display:flex;justify-content:space-between;align-items:baseline;margin:26px 0 12px}
+.linkBtn{background:none;border:none;color:var(--gold);font-weight:600;font-size:.85rem}
+
+.sessionList{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.sessionCard{
+  background:var(--pitch-800);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:12px 14px;display:flex;justify-content:space-between;align-items:center;
+}
+.sessionCard__meta{font-size:.8rem;color:var(--cream-dim)}
+.sessionCard__code{font-family:var(--mono);color:var(--gold-bright);font-weight:700}
+.badge{font-size:.65rem;padding:2px 8px;border-radius:999px;background:var(--wide);color:var(--pitch-950);font-weight:700;text-transform:uppercase}
+.badge--ended{background:var(--line);color:var(--cream-dim)}
+.emptyState{color:var(--cream-dim);font-size:.85rem;padding:14px;border:1px dashed var(--line);border-radius:var(--radius-sm);text-align:center}
+
+/* ---------- setup form ---------- */
+.setupCard{background:var(--pitch-800);border:1px solid var(--line);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)}
+.sessionCodeBanner{
+  font-family:var(--mono);text-align:center;padding:10px;margin-bottom:16px;
+  background:var(--pitch-800);border:1px dashed var(--gold);border-radius:var(--radius-sm);color:var(--gold-bright);
+  letter-spacing:.15em;font-weight:700;
+}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field label{font-size:.78rem;color:var(--cream-dim)}
+.field input,.field select{width:100%}
+.fieldRow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panelActions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.coin{
+  display:block;margin:20px auto;background:var(--gold);color:var(--pitch-950);border:none;
+  width:90px;height:90px;border-radius:50%;font-size:2rem;box-shadow:var(--shadow);
+}
+.tossResult{text-align:center;margin-top:14px}
+.segmented{display:flex;gap:8px;justify-content:center;margin-top:10px}
+.segmented button{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--cream)}
+.segmented button.is-active{background:var(--gold);color:var(--pitch-950);border-color:var(--gold)}
+
+/* ---------- live view ---------- */
+.liveInfoBar{text-align:center;margin:18px 0}
+.oversText{color:var(--cream-dim);font-size:.85rem}
+.scoreText{font-family:var(--mono);font-size:3rem;font-weight:700;color:var(--gold-bright);line-height:1}
+.namesText{font-family:var(--disp);font-size:1.1rem;margin-top:4px}
+.onCrease{display:flex;justify-content:center;gap:24px;margin:14px 0;font-size:.85rem;color:var(--cream-dim)}
+.onCrease b{color:var(--cream);font-weight:700}
+.ledStrip{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:16px 0;font-family:var(--mono)}
+.led{
+  min-width:30px;height:30px;padding:0 6px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  background:var(--pitch-800);border:1px solid var(--line);font-size:.8rem;font-weight:700;
+}
+.led--4{color:var(--run4)}.led--6{color:var(--run6)}.led--w{background:var(--wicket);color:#fff}
+.led--extra{color:var(--wide)}
+.lockNote{text-align:center;margin-top:-8px}
+.quickScore{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0}
+.quickScore button{
+  padding:16px 0;border-radius:var(--radius-sm);border:1px solid var(--line);background:var(--pitch-800);
+  color:var(--cream);font-family:var(--mono);font-size:1.1rem;font-weight:700;
+}
+.qs--alert{color:var(--wide)}
+.qs--wicket{background:var(--wicket);color:#fff;border-color:var(--wicket)}
+.qs--ghost{background:transparent;grid-column:span 2;font-family:var(--body);font-size:.85rem}
+.viewerNote{
+  text-align:center;background:var(--pitch-800);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:10px;color:var(--cream-dim);font-size:.85rem;margin:16px 0;
+}
+.scorecardBody table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:.85rem}
+.scorecardBody th,.scorecardBody td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}
+.scorecardBody th{color:var(--gold);font-weight:600;font-size:.75rem;text-transform:uppercase}
+
+.toast{
+  position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+  background:var(--gold);color:var(--pitch-950);padding:10px 20px;border-radius:999px;
+  font-weight:600;font-size:.85rem;box-shadow:var(--shadow);z-index:99;
+}
+[hidden]{display:none!important}
+</style>
 </head>
 <body>
 <div id="app">
@@ -17,134 +240,117 @@
   <header class="topbar">
     <div class="topbar__brand">
       <span class="topbar__seam" aria-hidden="true"></span>
-      <span class="topbar__name">Cricket<em>Score</em></span>
+      <span>Cricket<em>Score</em></span>
     </div>
-    <button class="iconbtn" data-nav="home" aria-label="Home">⌂</button>
+    <div class="topbar__actions">
+      <button class="iconbtn" id="manageToggleBtn" aria-label="Manage players and gallery" title="Manage">⚙</button>
+      <button class="iconbtn" data-nav="home" aria-label="Home" title="Home">⌂</button>
+    </div>
   </header>
+
+  <!-- Collapsible settings drawer: players + gallery, off the main page -->
+  <div class="manageDrawer" id="manageDrawer">
+    <div class="manageDrawer__inner">
+      <div class="tabs">
+        <button data-tab="players" class="is-active">Players</button>
+        <button data-tab="gallery">Gallery</button>
+      </div>
+
+      <div class="tabPanel is-active" data-panel="players">
+        <form class="playerAddForm" id="playerAddForm">
+          <label class="photoPicker" for="playerPhotoInput">
+            <img id="playerPhotoPreview" alt="" hidden>
+            <span id="photoPickerPlaceholder">＋ Photo</span>
+            <input type="file" id="playerPhotoInput" accept="image/*" hidden>
+          </label>
+          <div class="playerAddForm__fields">
+            <input type="text" id="playerNameInput" placeholder="Player name" maxlength="24" required>
+            <select id="playerRoleInput">
+              <option value="bat">Batter</option>
+              <option value="bowl">Bowler</option>
+              <option value="all">All-rounder</option>
+              <option value="wk">Wicketkeeper</option>
+            </select>
+            <button type="submit" class="btn btn--primary">Add player</button>
+          </div>
+        </form>
+        <div class="rosterGrid" id="rosterGrid"></div>
+      </div>
+
+      <div class="tabPanel" data-panel="gallery">
+        <div class="galleryUpload">
+          <label class="btn btn--primary" for="galleryPhotoInput">＋ Upload photos</label>
+          <input type="file" id="galleryPhotoInput" accept="image/*" multiple>
+        </div>
+        <div class="galleryGrid" id="galleryGrid"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- ============ HOME ============ -->
   <section class="view" id="view-home" data-view="home">
     <div class="hero">
-      <h1 class="hero__title">One code.<br>Everyone's watching the score.</h1>
-      <p class="hero__sub">Create a session, get a 5-digit code, and score every match ball by ball. Everything lives on this device — no accounts, no server.</p>
+      <h1 class="hero__title">One code.<br>Everyone's <em>watching</em> the score.</h1>
+      <p class="hero__sub">Start a session, share the 5-digit code, and anyone can follow the match live from their own device — as it happens.</p>
+      <div class="scoreDemo" aria-hidden="true">
+        <div class="flip">1</div><div class="flip">4</div><div class="flip">2</div>
+        <div class="flip" style="color:var(--cream)">/</div>
+        <div class="flip">4</div>
+      </div>
     </div>
 
-    <!-- Create / Join session ticket -->
     <div class="ticketRow">
       <div class="ticket">
-        <div class="ticket__stub">
+        <div>
           <span class="ticket__label">New</span>
-          <span class="ticket__big">Create session</span>
+          <span class="ticket__big">Create a session</span>
         </div>
-        <button class="btn btn--primary ticket__action" id="createSessionBtn">Start a session</button>
+        <button class="btn btn--primary ticket__action" id="createSessionBtn">Start session</button>
       </div>
-      <div class="ticket ticket--join">
-        <div class="ticket__stub">
+      <div class="ticket">
+        <div>
           <span class="ticket__label">Have a code?</span>
           <input class="ticket__codeInput" id="joinCodeInput" inputmode="numeric" maxlength="5" placeholder="00000">
         </div>
-        <button class="btn ticket__action" id="joinSessionBtn">View session</button>
+        <button class="btn ticket__action" id="joinSessionBtn">Watch session</button>
       </div>
     </div>
 
-    <!-- Player roster -->
-    <div class="sectionHead">
-      <h2>Players</h2>
-      <span class="muted">Stored on this device only</span>
-    </div>
-    <form class="playerAddForm" id="playerAddForm">
-      <label class="photoPicker" for="playerPhotoInput">
-        <img id="playerPhotoPreview" alt="" hidden>
-        <span id="photoPickerPlaceholder">＋<br>Photo</span>
-        <input type="file" id="playerPhotoInput" accept="image/*" hidden>
-      </label>
-      <div class="playerAddForm__fields">
-        <input type="text" id="playerNameInput" placeholder="Player name" maxlength="24" required>
-        <select id="playerRoleInput">
-          <option value="bat">Batter</option>
-          <option value="bowl">Bowler</option>
-          <option value="all">All-rounder</option>
-          <option value="wk">Wicketkeeper</option>
-        </select>
-        <button type="submit" class="btn btn--primary">Add player</button>
-      </div>
-    </form>
+    <div class="sectionHead"><h2>Ongoing matches</h2></div>
+    <ul class="sessionList" id="liveSessionList"></ul>
 
-    <div class="rosterGrid" id="rosterGrid"></div>
-
-    <!-- Gallery -->
-    <div class="sectionHead">
-      <h2>Photo gallery</h2>
-    </div>
-    <div class="gallery" id="gallery"></div>
-
-    <!-- Match history -->
     <div class="sectionHead">
       <h2>Previous sessions</h2>
-      <button class="linkBtn" data-nav="sessions">See all</button>
     </div>
-    <ul class="sessionList" id="homeSessionList"></ul>
+    <ul class="sessionList" id="pastSessionList"></ul>
   </section>
 
-  <!-- ============ SESSION SETUP (players + toss + overs) ============ -->
+  <!-- ============ SESSION SETUP ============ -->
   <section class="view" id="view-setup" data-view="setup" hidden>
     <div class="sessionCodeBanner" id="setupCodeBanner"></div>
-    <nav class="stepper" id="setupStepper">
-      <button class="stepper__step is-active" data-step="teams">1 · Teams</button>
-      <button class="stepper__step" data-step="lineup">2 · Lineup</button>
-      <button class="stepper__step" data-step="toss">3 · Toss</button>
-      <button class="stepper__step" data-step="overs">4 · Overs &amp; opening</button>
-    </nav>
-
-    <div class="setupPanel" data-panel="teams">
-      <h2>Name the two teams</h2>
-      <label class="carryToggle" id="carryToggleWrap" hidden>
-        <input type="checkbox" id="carryTeamsToggle">
-        Carry same teams as last match in this session
-      </label>
-      <div class="teamPairForm">
+    <div class="setupCard">
+      <h2>Match details</h2>
+      <div class="fieldRow">
         <div class="field"><label for="teamAName">Team A</label><input type="text" id="teamAName" placeholder="e.g. Falcons" maxlength="24"></div>
         <div class="field"><label for="teamBName">Team B</label><input type="text" id="teamBName" placeholder="e.g. Warriors" maxlength="24"></div>
       </div>
-      <div class="panelActions"><button class="btn btn--primary" id="teamsNextBtn">Next: Lineup</button></div>
-    </div>
+      <div class="field"><label for="oversInput">Overs per innings</label><input type="number" id="oversInput" min="1" max="50" value="20"></div>
 
-    <div class="setupPanel" data-panel="lineup" hidden>
-      <h2>Pick each side's players</h2>
-      <div class="rosterTabs">
-        <button class="rosterTabs__tab is-active" data-team="A">Team A</button>
-        <button class="rosterTabs__tab" data-team="B">Team B</button>
-      </div>
-      <p class="muted">Tap players from your roster to add them to this side.</p>
-      <div class="lineupPicker" id="lineupPicker"></div>
-      <div class="lineupChosen" id="lineupChosen"></div>
-      <div class="panelActions">
-        <button class="btn btn--ghost" id="lineupBackBtn">Back</button>
-        <button class="btn btn--primary" id="lineupNextBtn">Next: Toss</button>
-      </div>
-    </div>
-
-    <div class="setupPanel" data-panel="toss" hidden>
-      <h2>Toss</h2>
-      <button class="coin" id="coinFlipBtn"><span class="coin__face">🪙</span><span class="coin__label">Tap to flip</span></button>
+      <h2 style="margin-top:20px">Toss</h2>
+      <button class="coin" id="coinFlipBtn">🪙</button>
       <div class="tossResult" id="tossResult" hidden>
         <p><strong id="tossWinnerName"></strong> won the toss</p>
         <div class="segmented"><button data-choice="bat">Chose to bat</button><button data-choice="bowl">Chose to bowl</button></div>
       </div>
-      <div class="panelActions">
-        <button class="btn btn--ghost" id="tossBackBtn">Back</button>
-        <button class="btn btn--primary" id="tossNextBtn" disabled>Next: Overs</button>
-      </div>
-    </div>
 
-    <div class="setupPanel" data-panel="overs" hidden>
-      <h2>Match format &amp; opening</h2>
-      <div class="field"><label for="oversInput">Overs per innings</label><input type="number" id="oversInput" min="1" max="50" value="20"></div>
-      <div class="field"><label for="bowlerSelect">Opening bowler</label><select id="bowlerSelect"></select></div>
+      <h2 style="margin-top:20px">Opening players</h2>
       <div class="field"><label for="strikerSelect">Striker</label><select id="strikerSelect"></select></div>
       <div class="field"><label for="nonStrikerSelect">Non-striker</label><select id="nonStrikerSelect"></select></div>
+      <div class="field"><label for="bowlerSelect">Opening bowler</label><select id="bowlerSelect"></select></div>
+      <p class="muted">No roster yet? Add players from the ⚙ Manage menu, or just type names into the boxes above the pickers next time — for now pick from your saved roster.</p>
+
       <div class="panelActions">
-        <button class="btn btn--ghost" id="oversBackBtn">Back</button>
+        <button class="btn btn--ghost" data-nav="home">Cancel</button>
         <button class="btn btn--primary" id="startMatchBtn">Start match</button>
       </div>
     </div>
@@ -161,9 +367,7 @@
     </div>
 
     <div class="onCrease" id="onCrease"></div>
-
     <div class="ledStrip" id="ledStrip" aria-label="Ball by ball"></div>
-    <p class="muted lockNote">Balls stay editable for 2 overs, then lock automatically.</p>
 
     <div class="quickScore" id="quickScore" hidden>
       <button data-run="0">0</button><button data-run="1">1</button><button data-run="2">2</button>
@@ -171,82 +375,34 @@
       <button data-extra="wd" class="qs--alert">Wd</button><button data-extra="nb" class="qs--alert">Nb</button>
       <button data-extra="lb">Lb</button><button data-extra="b">B</button>
       <button data-wicket="1" class="qs--wicket">W</button>
-      <button data-action="undo" class="qs--ghost">Undo</button>
+      <button data-action="undo" class="qs--ghost">Undo last ball</button>
     </div>
 
-    <div class="viewerNote" id="viewerNote" hidden>You're viewing this session live. Only the device that created it can edit the score.</div>
+    <div class="viewerNote" id="viewerNote" hidden>You're watching this session live. Only the device that created it can score.</div>
 
     <div class="panelActions">
       <button class="btn" id="viewScorecardBtn">Full scorecard</button>
-      <button class="btn btn--primary" id="endInningsBtn" hidden>End innings</button>
-      <button class="btn btn--primary" id="nextMatchBtn" hidden>Start next match</button>
-      <button class="btn btn--ghost" id="closeSessionBtn" hidden>Close session</button>
+      <button class="btn btn--primary" id="endInningsBtn" hidden>End match</button>
     </div>
   </section>
-
-  <!-- Ball edit sheet -->
-  <div class="editSheet" id="editSheet" hidden>
-    <div class="editSheet__handle"></div>
-    <h3 id="editSheetTitle">Ball 5.3</h3>
-    <div class="editSheet__grid">
-      <label><input type="radio" name="editRuns" value="0">0</label><label><input type="radio" name="editRuns" value="1">1</label>
-      <label><input type="radio" name="editRuns" value="2">2</label><label><input type="radio" name="editRuns" value="3">3</label>
-      <label><input type="radio" name="editRuns" value="4">4</label><label><input type="radio" name="editRuns" value="6">6</label>
-    </div>
-    <div class="editSheet__toggles">
-      <label><input type="checkbox" id="editWide">Wide</label>
-      <label><input type="checkbox" id="editNoball">No ball</label>
-      <label><input type="checkbox" id="editBye">Bye</label>
-      <label><input type="checkbox" id="editLegbye">Leg bye</label>
-      <label><input type="checkbox" id="editWicket">Wicket</label>
-    </div>
-    <div class="panelActions">
-      <button class="btn btn--ghost" id="editCancelBtn">Cancel</button>
-      <button class="btn btn--primary" id="editSaveBtn">Save</button>
-    </div>
-  </div>
 
   <!-- ============ SCORECARD ============ -->
   <section class="view" id="view-scorecard" data-view="scorecard" hidden>
     <h2 id="scorecardTitle">Scorecard</h2>
-    <div id="scorecardBody"></div>
+    <div id="scorecardBody" class="scorecardBody"></div>
     <div class="panelActions">
       <button class="btn btn--ghost" data-nav-back="1">Back</button>
     </div>
   </section>
 
-  <!-- ============ SESSIONS / HISTORY ============ -->
-  <section class="view" id="view-sessions" data-view="sessions" hidden>
-    <h2>All sessions</h2>
-    <ul class="sessionList" id="fullSessionList"></ul>
-    <div class="panelActions"><button class="btn btn--ghost" data-nav="home">Back to home</button></div>
-  </section>
-
-  <!-- Player stat modal -->
-  <div class="modalOverlay" id="statModalOverlay" hidden>
-    <div class="modal">
-      <button class="modal__close" id="statModalClose">×</button>
-      <div class="modal__head" id="statModalHead"></div>
-      <div class="modal__tabs">
-        <button class="is-active" data-tab="batting">Batting</button>
-        <button data-tab="bowling">Bowling</button>
-      </div>
-      <div class="modal__body" id="statModalBody"></div>
-    </div>
-  </div>
-
 </div>
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="js/db.js"></script>
-<script src="js/players.js"></script>
-<script src="js/sessions.js"></script>
-<script src="js/matches.js"></script>
-<script src="js/scoring.js"></script>
-<script src="js/scorecard.js"></script>
-<script src="js/gallery.js"></script>
-<script src="js/router.js"></script>
-<script src="js/app.js"></script>
+<!-- Firebase (Spark/free tier — Firestore only, no Storage needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
