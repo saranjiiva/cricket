@@ -16,18 +16,8 @@
 //      bowler is excluded (can't bowl two overs running).
 //   4. Live - wicket: whenever a wicket falls, scoring is blocked
 //      until the next batter is chosen from the remaining team.
-//   5. 1st innings ends automatically (all overs bowled, or all
-//      out) → innings-break screen → owner starts the 2nd innings,
-//      teams swap bat/bowl roles and a target is set.
-//   6. 2nd innings shows target / runs needed / required run rate.
-//      Match ends the moment the chase is completed, or when overs
-//      run out / the side is bowled out — result (win/loss/tie) is
-//      computed and stored on the session.
-//   7. From the match summary the owner can start the next match
-//      (same teams or new teams, same series) or end the series and
-//      see series-wide stats: series winner, most attacking batter,
-//      most economical bowler, most wickets, MVP, and a list of
-//      every match in the series (tap one to open its scorecard).
+//   5. Innings ends automatically (all overs bowled, or all out),
+//      the match ends, and the owner can view the full scorecard.
 // ============================================================
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -35,6 +25,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 function toast(msg) {
   const t = $('#toast');
+  if (!t) return;
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toast._t);
@@ -79,10 +70,12 @@ $$('[data-nav-back]').forEach(b => b.addEventListener('click', () => {
 
 // ---------------- Manage drawer ----------------
 const manageDrawer = $('#manageDrawer');
-$('#manageToggleBtn').addEventListener('click', () => {
-  manageDrawer.classList.toggle('is-open');
-  $('#manageToggleBtn').classList.toggle('is-active');
-});
+if ($('#manageToggleBtn')) {
+  $('#manageToggleBtn').addEventListener('click', () => {
+    manageDrawer.classList.toggle('is-open');
+    $('#manageToggleBtn').classList.toggle('is-active');
+  });
+}
 $$('.tabs button').forEach(tabBtn => {
   tabBtn.addEventListener('click', () => {
     $$('.tabs button').forEach(b => b.classList.remove('is-active'));
@@ -95,34 +88,39 @@ $$('.tabs button').forEach(tabBtn => {
 let rosterCache = [];
 let pendingPhoto = null;
 
-$('#playerPhotoInput').addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  pendingPhoto = await resizeImageFile(file, 200, 0.75);
-  $('#playerPhotoPreview').src = pendingPhoto;
-  $('#playerPhotoPreview').hidden = false;
-  $('#photoPickerPlaceholder').hidden = true;
-});
-
-$('#playerAddForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const name = $('#playerNameInput').value.trim();
-  if (!name) return;
-  await db.collection('players').add({
-    name,
-    role: $('#playerRoleInput').value,
-    photo: pendingPhoto || null,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+if ($('#playerPhotoInput')) {
+  $('#playerPhotoInput').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    pendingPhoto = await resizeImageFile(file, 200, 0.75);
+    $('#playerPhotoPreview').src = pendingPhoto;
+    $('#playerPhotoPreview').hidden = false;
+    $('#photoPickerPlaceholder').hidden = true;
   });
-  e.target.reset();
-  pendingPhoto = null;
-  $('#playerPhotoPreview').hidden = true;
-  $('#photoPickerPlaceholder').hidden = false;
-  toast('Player added');
-});
+}
+
+if ($('#playerAddForm')) {
+  $('#playerAddForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#playerNameInput').value.trim();
+    if (!name) return;
+    await db.collection('players').add({
+      name,
+      role: $('#playerRoleInput').value,
+      photo: pendingPhoto || null,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    e.target.reset();
+    pendingPhoto = null;
+    $('#playerPhotoPreview').hidden = true;
+    $('#photoPickerPlaceholder').hidden = false;
+    toast('Player added');
+  });
+}
 
 function renderRoster() {
   const grid = $('#rosterGrid');
+  if (!grid) return;
   grid.innerHTML = rosterCache.length ? '' : '<p class="emptyState">No players yet — add one above.</p>';
   rosterCache.forEach(p => {
     const card = document.createElement('div');
@@ -152,18 +150,21 @@ db.collection('players').orderBy('name').onSnapshot(snap => {
 });
 
 // ---------------- Gallery ----------------
-$('#galleryPhotoInput').addEventListener('change', async e => {
-  const files = [...e.target.files];
-  for (const file of files) {
-    const dataUrl = await resizeImageFile(file, 900, 0.75);
-    await db.collection('gallery').add({ photo: dataUrl, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-  }
-  e.target.value = '';
-  toast(files.length > 1 ? 'Photos uploaded' : 'Photo uploaded');
-});
+if ($('#galleryPhotoInput')) {
+  $('#galleryPhotoInput').addEventListener('change', async e => {
+    const files = [...e.target.files];
+    for (const file of files) {
+      const dataUrl = await resizeImageFile(file, 900, 0.75);
+      await db.collection('gallery').add({ photo: dataUrl, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    }
+    e.target.value = '';
+    toast(files.length > 1 ? 'Photos uploaded' : 'Photo uploaded');
+  });
+}
 
 db.collection('gallery').orderBy('createdAt', 'desc').limit(60).onSnapshot(snap => {
   const grid = $('#galleryGrid');
+  if (!grid) return;
   grid.innerHTML = snap.empty ? '<p class="emptyState">No photos yet — upload some above.</p>' : '';
   snap.forEach(doc => {
     const d = doc.data();
@@ -177,38 +178,39 @@ db.collection('gallery').orderBy('createdAt', 'desc').limit(60).onSnapshot(snap 
 
 // ---------------- Sessions: create / join / list ----------------
 function genCode() { return String(Math.floor(10000 + Math.random() * 90000)); }
-function teamName(d, letter) { return letter === 'A' ? d.teamA : d.teamB; }
 
 // draft = the setup-in-progress session, before it goes live.
 let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names] }
 
-$('#createSessionBtn').addEventListener('click', async () => {
-  const code = genCode();
-  const ownerToken = uid();
-  localStorage.setItem('owner_' + code, ownerToken);
-  draft = { code, ownerToken, teamAPlayers: [], teamBPlayers: [] };
-  tossWinner = null;
-  tossDecision = null;
-  $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
-  $('#tossResult').hidden = true;
-  $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
-  $('#teamAName').value = '';
-  $('#teamBName').value = '';
-  $('#oversInput').value = 20;
-  $('#balanceBothTeamsCheck').checked = false;
-  renderTeamPlayerPickers();
-  await db.collection('sessions').doc(code).set({
-    code,
-    ownerToken,
-    status: 'setup',
-    seriesId: uid(),
-    seriesMatchNumber: 1,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+if ($('#createSessionBtn')) {
+  $('#createSessionBtn').addEventListener('click', async () => {
+    const code = genCode();
+    const ownerToken = uid();
+    localStorage.setItem('owner_' + code, ownerToken);
+    draft = { code, ownerToken, teamAPlayers: [], teamBPlayers: [] };
+    tossWinner = null;
+    tossDecision = null;
+    $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
+    $('#tossResult').hidden = true;
+    $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+    $('#teamAName').value = '';
+    $('#teamBName').value = '';
+    $('#oversInput').value = 20;
+    if ($('#balanceBothTeamsCheck')) $('#balanceBothTeamsCheck').checked = false;
+    renderTeamPlayerPickers();
+    await db.collection('sessions').doc(code).set({
+      code,
+      ownerToken,
+      status: 'setup',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    nav('setup');
   });
-  nav('setup');
-});
+}
 
-$('#joinSessionBtn').addEventListener('click', () => openSessionByCode($('#joinCodeInput').value.trim()));
+if ($('#joinSessionBtn')) {
+  $('#joinSessionBtn').addEventListener('click', () => openSessionByCode($('#joinCodeInput').value.trim()));
+}
 
 async function openSessionByCode(code) {
   if (!/^\d{5}$/.test(code)) { toast('Enter a valid 5-digit code'); return; }
@@ -222,13 +224,15 @@ async function openSessionByCode(code) {
 let tossWinner = null;
 let tossDecision = null;
 
-$('#coinFlipBtn').addEventListener('click', () => {
-  const teamA = $('#teamAName').value.trim() || 'Team A';
-  const teamB = $('#teamBName').value.trim() || 'Team B';
-  tossWinner = Math.random() < 0.5 ? teamA : teamB;
-  $('#tossWinnerName').textContent = tossWinner;
-  $('#tossResult').hidden = false;
-});
+if ($('#coinFlipBtn')) {
+  $('#coinFlipBtn').addEventListener('click', () => {
+    const teamA = $('#teamAName').value.trim() || 'Team A';
+    const teamB = $('#teamBName').value.trim() || 'Team B';
+    tossWinner = Math.random() < 0.5 ? teamA : teamB;
+    $('#tossWinnerName').textContent = tossWinner;
+    $('#tossResult').hidden = false;
+  });
+}
 $$('#tossResult .segmented button').forEach(b => b.addEventListener('click', () => {
   tossDecision = b.dataset.choice;
   $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
@@ -240,64 +244,68 @@ function renderTeamPlayerPickers() {
   if (!draft) return;
   const rosterAList = $('#teamARosterList');
   const rosterBList = $('#teamBRosterList');
- const rosterOptionHtml = (team) => rosterCache.length
-  ? rosterCache.map(p => `
-      <label style="
-          display:flex;
-          align-items:center;
-          gap:10px;
-          padding:8px 12px;
-          margin-bottom:8px;
-          background:var(--pitch-800);
-          border:1px solid var(--line);
-          border-radius:10px;
-          cursor:pointer;
-          color:var(--cream);
-      ">
-          <input
-              type="checkbox"
-              data-roster-team="${team}"
-              value="${escapeHtml(p.name)}"
-              ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}
-          >
-
-          <img
-              src="${p.photo || fallbackAvatar(p.name)}"
-              style="
-                  width:36px;
-                  height:36px;
-                  border-radius:50%;
-                  object-fit:cover;
-                  border:1px solid var(--line);
-              "
-          >
-
-          <div style="display:flex;flex-direction:column;">
-              <span style="font-weight:600;">${escapeHtml(p.name)}</span>
-              <small style="color:var(--gold);font-size:11px;">
-                  ${roleLabel(p.role)}
-              </small>
-          </div>
-      </label>
-  `).join('')
-  : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
+  if (!rosterAList || !rosterBList) return;
+  const rosterOptionHtml = (team) => rosterCache.length
+    ? rosterCache.map(p => `
+        <label style="
+            display:flex;
+            align-items:center;
+            gap:10px;
+            padding:8px 12px;
+            margin-bottom:8px;
+            background:var(--pitch-800);
+            border:1px solid var(--line);
+            border-radius:10px;
+            cursor:pointer;
+            color:var(--cream);
+        ">
+            <input
+                type="checkbox"
+                data-roster-team="${team}"
+                value="${escapeHtml(p.name)}"
+                ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}
+            >
+            <img
+                src="${p.photo || fallbackAvatar(p.name)}"
+                style="
+                    width:36px;
+                    height:36px;
+                    border-radius:50%;
+                    object-fit:cover;
+                    border:1px solid var(--line);
+                "
+            >
+            <div style="display:flex;flex-direction:column;">
+                <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+                <small style="color:var(--gold);font-size:11px;">
+                    ${roleLabel(p.role)}
+                </small>
+            </div>
+        </label>
+    `).join('')
+    : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
   rosterAList.innerHTML = rosterOptionHtml('A');
   rosterBList.innerHTML = rosterOptionHtml('B');
   renderTeamChips();
 }
 
 function renderTeamChips() {
+  if (!draft) return;
   const chip = (name, team) => `
     <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
       ${escapeHtml(name)}
       <button type="button" data-remove-${team.toLowerCase()}="${escapeHtml(name)}" style="border:none;background:transparent;cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
     </span>`;
-  $('#teamAChips').innerHTML = draft.teamAPlayers.length
-    ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
-    : '<span class="muted">No players added yet</span>';
-  $('#teamBChips').innerHTML = draft.teamBPlayers.length
-    ? draft.teamBPlayers.map(n => chip(n, 'B')).join('')
-    : '<span class="muted">No players added yet</span>';
+  if ($('#teamAChips')) {
+    $('#teamAChips').innerHTML = draft.teamAPlayers.length
+      ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
+      : '<span class="muted">No players added yet</span>';
+  }
+  if ($('#teamBChips')) {
+    $('#teamBChips').innerHTML = draft.teamBPlayers.length
+      ? draft.teamBPlayers.map(n => chip(n, 'B')).join('')
+      : '<span class="muted">No players added yet</span>';
+  }
 }
 
 function toggleTeamPlayer(team, name, checked) {
@@ -308,16 +316,20 @@ function toggleTeamPlayer(team, name, checked) {
   renderTeamChips();
 }
 
-$('#teamARosterList').addEventListener('change', e => {
-  const cb = e.target.closest('input[type=checkbox]');
-  if (!cb) return;
-  toggleTeamPlayer('A', cb.value, cb.checked);
-});
-$('#teamBRosterList').addEventListener('change', e => {
-  const cb = e.target.closest('input[type=checkbox]');
-  if (!cb) return;
-  toggleTeamPlayer('B', cb.value, cb.checked);
-});
+if ($('#teamARosterList')) {
+  $('#teamARosterList').addEventListener('change', e => {
+    const cb = e.target.closest('input[type=checkbox]');
+    if (!cb) return;
+    toggleTeamPlayer('A', cb.value, cb.checked);
+  });
+}
+if ($('#teamBRosterList')) {
+  $('#teamBRosterList').addEventListener('change', e => {
+    const cb = e.target.closest('input[type=checkbox]');
+    if (!cb) return;
+    toggleTeamPlayer('B', cb.value, cb.checked);
+  });
+}
 
 function removeTeamPlayer(team, name) {
   const list = draft['team' + team + 'Players'];
@@ -328,82 +340,87 @@ function removeTeamPlayer(team, name) {
   renderTeamChips();
 }
 
-$('#teamAChips').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-remove-a]');
-  if (!btn) return;
-  removeTeamPlayer('A', btn.dataset.removeA);
-});
-$('#teamBChips').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-remove-b]');
-  if (!btn) return;
-  removeTeamPlayer('B', btn.dataset.removeB);
-});
+if ($('#teamAChips')) {
+  $('#teamAChips').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-remove-a]');
+    if (!btn) return;
+    removeTeamPlayer('A', btn.dataset.removeA);
+  });
+}
+if ($('#teamBChips')) {
+  $('#teamBChips').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-remove-b]');
+    if (!btn) return;
+    removeTeamPlayer('B', btn.dataset.removeB);
+  });
+}
 
-$('#addTeamAPlayerBtn').addEventListener('click', () => {
-  const input = $('#teamAAdHocInput');
-  const name = input.value.trim();
-  if (!name) return;
-  const both = $('#balanceBothTeamsCheck').checked;
-  if (!draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
-  if (both && !draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
-  input.value = '';
-  renderTeamChips();
-});
-$('#addTeamBPlayerBtn').addEventListener('click', () => {
-  const input = $('#teamBAdHocInput');
-  const name = input.value.trim();
-  if (!name) return;
-  const both = $('#balanceBothTeamsCheck').checked;
-  if (!draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
-  if (both && !draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
-  input.value = '';
-  renderTeamChips();
-});
+if ($('#addTeamAPlayerBtn')) {
+  $('#addTeamAPlayerBtn').addEventListener('click', () => {
+    const input = $('#teamAAdHocInput');
+    const name = input.value.trim();
+    if (!name) return;
+    const both = $('#balanceBothTeamsCheck') ? $('#balanceBothTeamsCheck').checked : false;
+    if (!draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
+    if (both && !draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
+    input.value = '';
+    renderTeamChips();
+  });
+}
+if ($('#addTeamBPlayerBtn')) {
+  $('#addTeamBPlayerBtn').addEventListener('click', () => {
+    const input = $('#teamBAdHocInput');
+    const name = input.value.trim();
+    if (!name) return;
+    const both = $('#balanceBothTeamsCheck') ? $('#balanceBothTeamsCheck').checked : false;
+    if (!draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
+    if (both && !draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
+    input.value = '';
+    renderTeamChips();
+  });
+}
 
 // ---------------- Setup: start match ----------------
-$('#startMatchBtn').addEventListener('click', async () => {
-  const teamA = $('#teamAName').value.trim() || 'Team A';
-  const teamB = $('#teamBName').value.trim() || 'Team B';
-  const overs = parseInt($('#oversInput').value, 10) || 20;
+if ($('#startMatchBtn')) {
+  $('#startMatchBtn').addEventListener('click', async () => {
+    const teamA = $('#teamAName').value.trim() || 'Team A';
+    const teamB = $('#teamBName').value.trim() || 'Team B';
+    const overs = parseInt($('#oversInput').value, 10) || 20;
 
-  if (draft.teamAPlayers.length < 2) { toast(`Add at least 2 players to ${teamA}`); return; }
-  if (draft.teamBPlayers.length < 2) { toast(`Add at least 2 players to ${teamB}`); return; }
-  if (!tossWinner) { toast('Flip the coin to decide the toss first'); return; }
-  if (!tossDecision) { toast('Pick bat or bowl after the toss'); return; }
+    if (draft.teamAPlayers.length < 2) { toast(`Add at least 2 players to ${teamA}`); return; }
+    if (draft.teamBPlayers.length < 2) { toast(`Add at least 2 players to ${teamB}`); return; }
+    if (!tossWinner) { toast('Flip the coin to decide the toss first'); return; }
+    if (!tossDecision) { toast('Pick bat or bowl after the toss'); return; }
 
-  const winnerIsA = tossWinner === teamA;
-  const battingTeam = (tossDecision === 'bat')
-    ? (winnerIsA ? 'A' : 'B')
-    : (winnerIsA ? 'B' : 'A');
-  const bowlingTeam = battingTeam === 'A' ? 'B' : 'A';
+    const winnerIsA = tossWinner === teamA;
+    const battingTeam = (tossDecision === 'bat')
+      ? (winnerIsA ? 'A' : 'B')
+      : (winnerIsA ? 'B' : 'A');
+    const bowlingTeam = battingTeam === 'A' ? 'B' : 'A';
 
-  await db.collection('sessions').doc(draft.code).update({
-    teamA, teamB, overs,
-    toss: { winner: tossWinner, decision: tossDecision },
-    teamAPlayers: draft.teamAPlayers,
-    teamBPlayers: draft.teamBPlayers,
-    battingTeam, bowlingTeam,
-    inningsNumber: 1,
-    target: null,
-    innings1: null,
-    result: null,
-    awaitingInningsBreak: false,
-    striker: null,
-    nonStriker: null,
-    bowler: null,
-    lastOverBowler: null,
-    needNewBatsman: false,
-    outSlot: null,
-    score: { runs: 0, wickets: 0, balls: 0 },
-    log: [],
-    battingStats: {},
-    bowlingStats: {},
-    dismissedPlayers: [],
-    status: 'live',
+    await db.collection('sessions').doc(draft.code).update({
+      teamA, teamB, overs,
+      toss: { winner: tossWinner, decision: tossDecision },
+      teamAPlayers: draft.teamAPlayers,
+      teamBPlayers: draft.teamBPlayers,
+      battingTeam, bowlingTeam,
+      striker: null,
+      nonStriker: null,
+      bowler: null,
+      lastOverBowler: null,
+      needNewBatsman: false,
+      outSlot: null,
+      score: { runs: 0, wickets: 0, balls: 0 },
+      log: [],
+      battingStats: {},
+      bowlingStats: {},
+      dismissedPlayers: [],
+      status: 'live',
+    });
+    watchSession(draft.code);
+    nav('live');
   });
-  watchSession(draft.code);
-  nav('live');
-});
+}
 
 // ---------------- Live session watching ----------------
 let currentCode = null, currentUnsub = null, currentData = null, isOwner = false;
@@ -421,6 +438,7 @@ function watchSession(code) {
 
 function populateSelect(sel, names) {
   const el = typeof sel === 'string' ? $(sel) : sel;
+  if (!el) return;
   el.innerHTML = names.length
     ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
     : '<option value="">No players available</option>';
@@ -428,232 +446,8 @@ function populateSelect(sel, names) {
 
 function renderLive() {
   const d = currentData;
-  $('#liveCodeBanner').textContent = `Session code  ${currentCode.split('').join(' ')}`;
-  const balls = d.score?.balls || 0;
-  $('#oversText').textContent = `Over ${Math.floor(balls / 6)}.${balls % 6} of ${d.overs}`;
-  $('#scoreText').textContent = `${d.score?.runs || 0}/${d.score?.wickets || 0}`;
-  $('#namesText').textContent = `${d.teamA} vs ${d.teamB}${d.inningsNumber === 2 ? ' (2nd innings)' : ''}`;
-  $('#onCrease').innerHTML = d.striker
-    ? `<span>🏏 <b>${escapeHtml(d.striker)}</b>${d.striker && !d.needNewBatsman ? '*' : ''}</span><span>${escapeHtml(d.nonStriker || '')}</span><span>Bowler: <b>${escapeHtml(d.bowler || '—')}</b></span>`
-    : '<span class="muted">Waiting for openers…</span>';
+  if (!d) return;
 
-  const strip = $('#ledStrip');
-  strip.innerHTML = '';
-  (d.log || []).slice(-18).forEach(entry => {
-    const led = document.createElement('span');
-    led.className = 'led' + (entry.wicket ? ' led--w' : entry.extra ? ' led--extra' : entry.r === 4 ? ' led--4' : entry.r === 6 ? ' led--6' : '');
-    led.textContent = entry.wicket ? 'W' : entry.extra ? entry.extra.toUpperCase() : entry.r;
-    strip.appendChild(led);
-  });
-
-  const live = d.status === 'live';
-  const ended = d.status === 'ended';
-  const awaitingBreak = live && !!d.awaitingInningsBreak;
-  const activePhase = live && !awaitingBreak;
-
-  $('#inningsBreakPanel').hidden = !awaitingBreak;
-  if (awaitingBreak) renderInningsBreakSummary(d);
-
-  $('#matchSummaryPanel').hidden = !ended;
-  if (ended) renderMatchSummary(d);
-
-  // Target / required-run-rate banner, 2nd innings only.
-  if (activePhase && d.inningsNumber === 2 && d.target != null) {
-    const ballsRemaining = Math.max(0, d.overs * 6 - balls);
-    const runsNeeded = Math.max(0, d.target - (d.score?.runs || 0));
-    const rrr = ballsRemaining > 0 ? (runsNeeded / (ballsRemaining / 6)).toFixed(2) : '—';
-    $('#targetBanner').hidden = false;
-    $('#targetBanner').textContent = `Target ${d.target} · Need ${runsNeeded} from ${Math.floor(ballsRemaining / 6)}.${ballsRemaining % 6} overs (RRR ${rrr})`;
-  } else {
-    $('#targetBanner').hidden = true;
-  }
-
-  const battingPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
-  const bowlingPlayers = (d.battingTeam === 'A' ? d.teamBPlayers : d.teamAPlayers) || [];
-
-  const needOpeners = activePhase && (!d.striker || !d.nonStriker);
-  const needBatsman = activePhase && !needOpeners && !!d.needNewBatsman;
-  const needBowler = activePhase && !needOpeners && !needBatsman && !d.bowler;
-  const readyToScore = activePhase && !needOpeners && !needBatsman && !needBowler;
-
-  $('#openerPanel').hidden = !(isOwner && needOpeners);
-  $('#newBatsmanPanel').hidden = !(isOwner && needBatsman);
-  $('#bowlerPanel').hidden = !(isOwner && needBowler);
-  $('#quickScore').hidden = !(isOwner && readyToScore);
-  $('#endInningsBtn').hidden = !(isOwner && activePhase);
-  $('#viewerNote').hidden = isOwner;
-
-  if (isOwner && needOpeners) {
-    populateSelect('#liveStrikerSelect', battingPlayers);
-    populateSelect('#liveNonStrikerSelect', battingPlayers);
-  }
-  if (isOwner && needBatsman) {
-    const dismissed = d.dismissedPlayers || [];
-    const otheincludes(p.name) ? 'checked' : ''}
-          >
-
-          <img
-              src="${p.photo || fallbackAvatar(p.name)}"
-              style="
-                  width:36px;
-                  height:36px;
-                  border-radius:50%;
-                  object-fit:cover;
-                  border:1px solid var(--line);
-              "
-          >
-
-          <div style="display:flex;flex-direction:column;">
-              <span style="font-weight:600;">${escapeHtml(p.name)}</span>
-              <small style="color:var(--gold);font-size:11px;">
-                  ${roleLabel(p.role)}
-              </small>
-          </div>
-      </label>
-  `).join('')
-  : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
-  rosterAList.innerHTML = rosterOptionHtml('A');
-  rosterBList.innerHTML = rosterOptionHtml('B');
-  renderTeamChips();
-}
-
-function renderTeamChips() {
-  const chip = (name, team) => `
-    <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
-      ${escapeHtml(name)}
-      <button type="button" data-remove-${team.toLowerCase()}="${escapeHtml(name)}" style="border:none;background:transparent;cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
-    </span>`;
-  $('#teamAChips').innerHTML = draft.teamAPlayers.length
-    ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
-    : '<span class="muted">No players added yet</span>';
-  $('#teamBChips').innerHTML = draft.teamBPlayers.length
-    ? draft.teamBPlayers.map(n => chip(n, 'B')).join('')
-    : '<span class="muted">No players added yet</span>';
-}
-
-function toggleTeamPlayer(team, name, checked) {
-  const list = draft['team' + team + 'Players'];
-  const idx = list.indexOf(name);
-  if (checked && idx === -1) list.push(name);
-  if (!checked && idx > -1) list.splice(idx, 1);
-  renderTeamChips();
-}
-
-$('#teamARosterList').addEventListener('change', e => {
-  const cb = e.target.closest('input[type=checkbox]');
-  if (!cb) return;
-  toggleTeamPlayer('A', cb.value, cb.checked);
-});
-$('#teamBRosterList').addEventListener('change', e => {
-  const cb = e.target.closest('input[type=checkbox]');
-  if (!cb) return;
-  toggleTeamPlayer('B', cb.value, cb.checked);
-});
-
-function removeTeamPlayer(team, name) {
-  const list = draft['team' + team + 'Players'];
-  const idx = list.indexOf(name);
-  if (idx > -1) list.splice(idx, 1);
-  const cb = $(`input[data-roster-team="${team}"][value="${CSS.escape(name)}"]`);
-  if (cb) cb.checked = false;
-  renderTeamChips();
-}
-
-$('#teamAChips').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-remove-a]');
-  if (!btn) return;
-  removeTeamPlayer('A', btn.dataset.removeA);
-});
-$('#teamBChips').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-remove-b]');
-  if (!btn) return;
-  removeTeamPlayer('B', btn.dataset.removeB);
-});
-
-$('#addTeamAPlayerBtn').addEventListener('click', () => {
-  const input = $('#teamAAdHocInput');
-  const name = input.value.trim();
-  if (!name) return;
-  const both = $('#balanceBothTeamsCheck').checked;
-  if (!draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
-  if (both && !draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
-  input.value = '';
-  renderTeamChips();
-});
-$('#addTeamBPlayerBtn').addEventListener('click', () => {
-  const input = $('#teamBAdHocInput');
-  const name = input.value.trim();
-  if (!name) return;
-  const both = $('#balanceBothTeamsCheck').checked;
-  if (!draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
-  if (both && !draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
-  input.value = '';
-  renderTeamChips();
-});
-
-// ---------------- Setup: start match ----------------
-$('#startMatchBtn').addEventListener('click', async () => {
-  const teamA = $('#teamAName').value.trim() || 'Team A';
-  const teamB = $('#teamBName').value.trim() || 'Team B';
-  const overs = parseInt($('#oversInput').value, 10) || 20;
-
-  if (draft.teamAPlayers.length < 2) { toast(`Add at least 2 players to ${teamA}`); return; }
-  if (draft.teamBPlayers.length < 2) { toast(`Add at least 2 players to ${teamB}`); return; }
-  if (!tossWinner) { toast('Flip the coin to decide the toss first'); return; }
-  if (!tossDecision) { toast('Pick bat or bowl after the toss'); return; }
-
-  const winnerIsA = tossWinner === teamA;
-  const battingTeam = (tossDecision === 'bat')
-    ? (winnerIsA ? 'A' : 'B')
-    : (winnerIsA ? 'B' : 'A');
-  const bowlingTeam = battingTeam === 'A' ? 'B' : 'A';
-
-  await db.collection('sessions').doc(draft.code).update({
-    teamA, teamB, overs,
-    toss: { winner: tossWinner, decision: tossDecision },
-    teamAPlayers: draft.teamAPlayers,
-    teamBPlayers: draft.teamBPlayers,
-    battingTeam, bowlingTeam,
-    striker: null,
-    nonStriker: null,
-    bowler: null,
-    lastOverBowler: null,
-    needNewBatsman: false,
-    outSlot: null,
-    score: { runs: 0, wickets: 0, balls: 0 },
-    log: [],
-    battingStats: {},
-    bowlingStats: {},
-    dismissedPlayers: [],
-    status: 'live',
-  });
-  watchSession(draft.code);
-  nav('live');
-});
-
-// ---------------- Live session watching ----------------
-let currentCode = null, currentUnsub = null, currentData = null, isOwner = false;
-
-function watchSession(code) {
-  if (currentUnsub) currentUnsub();
-  currentCode = code;
-  isOwner = localStorage.getItem('owner_' + code) !== null;
-  currentUnsub = db.collection('sessions').doc(code).onSnapshot(doc => {
-    if (!doc.exists) return;
-    currentData = doc.data();
-    renderLive();
-  });
-}
-
-function populateSelect(sel, names) {
-  const el = typeof sel === 'string' ? $(sel) : sel;
-  el.innerHTML = names.length
-    ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
-    : '<option value="">No players available</option>';
-}
-
-function renderLive() {
-  const d = currentData;
   $('#liveCodeBanner').textContent = `Session code  ${currentCode.split('').join(' ')}`;
   const balls = d.score?.balls || 0;
   $('#oversText').textContent = `Over ${Math.floor(balls / 6)}.${balls % 6} of ${d.overs}`;
@@ -664,15 +458,19 @@ function renderLive() {
     : '<span class="muted">Waiting for openers…</span>';
 
   const strip = $('#ledStrip');
-  strip.innerHTML = '';
-  (d.log || []).slice(-18).forEach(entry => {
-    const led = document.createElement('span');
-    led.className = 'led' + (entry.wicket ? ' led--w' : entry.extra ? ' led--extra' : entry.r === 4 ? ' led--4' : entry.r === 6 ? ' led--6' : '');
-    led.textContent = entry.wicket ? 'W' : entry.extra ? entry.extra.toUpperCase() : entry.r;
-    strip.appendChild(led);
-  });
+  if (strip) {
+    strip.innerHTML = '';
+    (d.log || []).slice(-18).forEach(entry => {
+      const led = document.createElement('span');
+      led.className = 'led' + (entry.wicket ? ' led--w' : entry.extra ? ' led--extra' : entry.r === 4 ? ' led--4' : entry.r === 6 ? ' led--6' : '');
+      led.textContent = entry.wicket ? 'W' : entry.extra ? entry.extra.toUpperCase() : entry.r;
+      strip.appendChild(led);
+    });
+  }
 
   const live = d.status === 'live';
+  const ended = d.status === 'ended';
+
   const battingPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
   const bowlingPlayers = (d.battingTeam === 'A' ? d.teamBPlayers : d.teamAPlayers) || [];
 
@@ -681,12 +479,13 @@ function renderLive() {
   const needBowler = live && !needOpeners && !needBatsman && !d.bowler;
   const readyToScore = live && !needOpeners && !needBatsman && !needBowler;
 
-  $('#openerPanel').hidden = !(isOwner && needOpeners);
-  $('#newBatsmanPanel').hidden = !(isOwner && needBatsman);
-  $('#bowlerPanel').hidden = !(isOwner && needBowler);
-  $('#quickScore').hidden = !(isOwner && readyToScore);
-  $('#endInningsBtn').hidden = !(isOwner && live);
-  $('#viewerNote').hidden = isOwner;
+  if ($('#openerPanel')) $('#openerPanel').hidden = !(isOwner && needOpeners);
+  if ($('#newBatsmanPanel')) $('#newBatsmanPanel').hidden = !(isOwner && needBatsman);
+  if ($('#bowlerPanel')) $('#bowlerPanel').hidden = !(isOwner && needBowler);
+  if ($('#quickScore')) $('#quickScore').hidden = !(isOwner && readyToScore);
+  if ($('#endInningsBtn')) $('#endInningsBtn').hidden = !(isOwner && live);
+  if ($('#viewerNote')) $('#viewerNote').hidden = isOwner;
+  if ($('#matchEndedBanner')) $('#matchEndedBanner').hidden = !ended;
 
   if (isOwner && needOpeners) {
     populateSelect('#liveStrikerSelect', battingPlayers);
@@ -697,7 +496,7 @@ function renderLive() {
     const otherOnCrease = d.outSlot === 'striker' ? d.nonStriker : d.striker;
     const outgoing = d.outSlot === 'striker' ? d.striker : d.nonStriker;
     const remaining = battingPlayers.filter(p => !dismissed.includes(p) && p !== otherOnCrease);
-    $('#newBatsmanLabel').textContent = `${outgoing || 'Batter'} is out — pick the next batter`;
+    if ($('#newBatsmanLabel')) $('#newBatsmanLabel').textContent = `${outgoing || 'Batter'} is out — pick the next batter`;
     populateSelect('#liveNewBatsmanSelect', remaining);
   }
   if (isOwner && needBowler) {
@@ -706,34 +505,42 @@ function renderLive() {
       options = bowlingPlayers.filter(p => p !== d.lastOverBowler);
     }
     populateSelect('#liveBowlerSelect', options);
-    $('#bowlerHint').textContent = d.lastOverBowler
-      ? `${d.lastOverBowler} just finished an over and can't bowl the next one.`
-      : `A bowler can't bowl two overs in a row.`;
+    if ($('#bowlerHint')) {
+      $('#bowlerHint').textContent = d.lastOverBowler
+        ? `${d.lastOverBowler} just finished an over and can't bowl the next one.`
+        : `A bowler can't bowl two overs in a row.`;
+    }
   }
 }
 
 // ---------------- Live: openers / bowler / next batter ----------------
-$('#confirmOpenersBtn').addEventListener('click', async () => {
-  const striker = $('#liveStrikerSelect').value;
-  const nonStriker = $('#liveNonStrikerSelect').value;
-  if (!striker || !nonStriker || striker === nonStriker) { toast('Pick two different openers'); return; }
-  await db.collection('sessions').doc(currentCode).update({ striker, nonStriker });
-});
+if ($('#confirmOpenersBtn')) {
+  $('#confirmOpenersBtn').addEventListener('click', async () => {
+    const striker = $('#liveStrikerSelect').value;
+    const nonStriker = $('#liveNonStrikerSelect').value;
+    if (!striker || !nonStriker || striker === nonStriker) { toast('Pick two different openers'); return; }
+    await db.collection('sessions').doc(currentCode).update({ striker, nonStriker });
+  });
+}
 
-$('#confirmBowlerBtn').addEventListener('click', async () => {
-  const bowler = $('#liveBowlerSelect').value;
-  if (!bowler) { toast('Pick a bowler'); return; }
-  await db.collection('sessions').doc(currentCode).update({ bowler });
-});
+if ($('#confirmBowlerBtn')) {
+  $('#confirmBowlerBtn').addEventListener('click', async () => {
+    const bowler = $('#liveBowlerSelect').value;
+    if (!bowler) { toast('Pick a bowler'); return; }
+    await db.collection('sessions').doc(currentCode).update({ bowler });
+  });
+}
 
-$('#confirmNewBatsmanBtn').addEventListener('click', async () => {
-  const name = $('#liveNewBatsmanSelect').value;
-  if (!name) { toast('Pick the next batter'); return; }
-  const d = currentData;
-  const update = { needNewBatsman: false, outSlot: null };
-  if (d.outSlot === 'striker') update.striker = name; else update.nonStriker = name;
-  await db.collection('sessions').doc(currentCode).update(update);
-});
+if ($('#confirmNewBatsmanBtn')) {
+  $('#confirmNewBatsmanBtn').addEventListener('click', async () => {
+    const name = $('#liveNewBatsmanSelect').value;
+    if (!name) { toast('Pick the next batter'); return; }
+    const d = currentData;
+    const update = { needNewBatsman: false, outSlot: null };
+    if (d.outSlot === 'striker') update.striker = name; else update.nonStriker = name;
+    await db.collection('sessions').doc(currentCode).update(update);
+  });
+}
 
 // ---------------- Live: scoring ----------------
 function ensureBatter(stats, name) {
@@ -897,14 +704,16 @@ async function undoLastBall() {
   });
 }
 
-$('#quickScore').addEventListener('click', e => {
-  const btn = e.target.closest('button');
-  if (!btn) return;
-  if (btn.dataset.run !== undefined) recordBall({ r: parseInt(btn.dataset.run, 10) });
-  else if (btn.dataset.extra) recordBall({ extra: btn.dataset.extra });
-  else if (btn.dataset.wicket) openWicketDialog();
-  else if (btn.dataset.action === 'undo') undoLastBall();
-});
+if ($('#quickScore')) {
+  $('#quickScore').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    if (btn.dataset.run !== undefined) recordBall({ r: parseInt(btn.dataset.run, 10) });
+    else if (btn.dataset.extra) recordBall({ extra: btn.dataset.extra });
+    else if (btn.dataset.wicket) openWicketDialog();
+    else if (btn.dataset.action === 'undo') undoLastBall();
+  });
+}
 
 // ---------------- Wicket dialog ----------------
 function openWicketDialog() {
@@ -916,98 +725,105 @@ function openWicketDialog() {
   $('#wicketFielderInput').value = '';
   $('#wicketDialog').hidden = false;
 }
-$('#wicketCancelBtn').addEventListener('click', () => { $('#wicketDialog').hidden = true; });
-$('#wicketConfirmBtn').addEventListener('click', () => {
-  const outSlot = $('#wicketOutSelect').value;
-  const dismissalType = $('#wicketTypeSelect').value;
-  const fielder = $('#wicketFielderInput').value.trim();
-  $('#wicketDialog').hidden = true;
-  recordBall({ wicket: true, outSlot, dismissalType, fielder });
-});
+if ($('#wicketCancelBtn')) $('#wicketCancelBtn').addEventListener('click', () => { $('#wicketDialog').hidden = true; });
+if ($('#wicketConfirmBtn')) {
+  $('#wicketConfirmBtn').addEventListener('click', () => {
+    const outSlot = $('#wicketOutSelect').value;
+    const dismissalType = $('#wicketTypeSelect').value;
+    const fielder = $('#wicketFielderInput').value.trim();
+    $('#wicketDialog').hidden = true;
+    recordBall({ wicket: true, outSlot, dismissalType, fielder });
+  });
+}
 
-$('#endInningsBtn').addEventListener('click', async () => {
-  await db.collection('sessions').doc(currentCode).update({ status: 'ended' });
-  toast('Match ended');
-});
+if ($('#endInningsBtn')) {
+  $('#endInningsBtn').addEventListener('click', async () => {
+    await db.collection('sessions').doc(currentCode).update({ status: 'ended' });
+    toast('Match ended');
+  });
+}
 
 // ---------------- Scorecard ----------------
-$('#viewScorecardBtn').addEventListener('click', () => {
-  const d = currentData;
-  $('#scorecardTitle').textContent = `${d.teamA} vs ${d.teamB}`;
-  const balls = d.score?.balls || 0;
-  const log = d.log || [];
-  const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
-  const battingStats = d.battingStats || {};
-  const bowlingStats = d.bowlingStats || {};
+if ($('#viewScorecardBtn')) {
+  $('#viewScorecardBtn').addEventListener('click', () => {
+    const d = currentData;
+    $('#scorecardTitle').textContent = `${d.teamA} vs ${d.teamB}`;
+    const balls = d.score?.balls || 0;
+    const log = d.log || [];
+    const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+    const battingStats = d.battingStats || {};
+    const bowlingStats = d.bowlingStats || {};
 
-  // Batting order = order players first appear on strike in the log.
-  const battedOrder = [];
-  log.forEach(e => { if (e.batter && !battedOrder.includes(e.batter)) battedOrder.push(e.batter); });
-  [d.striker, d.nonStriker].forEach(n => { if (n && !battedOrder.includes(n)) battedOrder.push(n); });
+    // Batting order = order players first appear on strike in the log.
+    const battedOrder = [];
+    log.forEach(e => { if (e.batter && !battedOrder.includes(e.batter)) battedOrder.push(e.batter); });
+    [d.striker, d.nonStriker].forEach(n => { if (n && !battedOrder.includes(n)) battedOrder.push(n); });
 
-  const battingRows = battedOrder.map(name => {
-    const s = battingStats[name] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
-    const sr = s.balls ? ((s.runs / s.balls) * 100).toFixed(2) : '0.00';
-    const status = s.out
-      ? escapeHtml(s.dismissal || 'out')
-      : (name === d.striker || name === d.nonStriker ? 'not out' : '');
-    return `<tr><td>${escapeHtml(name)}</td><td class="muted">${status}</td><td>${s.runs}</td><td>${s.balls}</td><td>${s.fours}</td><td>${s.sixes}</td><td>${sr}</td></tr>`;
-  }).join('');
+    const battingRows = battedOrder.map(name => {
+      const s = battingStats[name] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
+      const sr = s.balls ? ((s.runs / s.balls) * 100).toFixed(2) : '0.00';
+      const status = s.out
+        ? escapeHtml(s.dismissal || 'out')
+        : (name === d.striker || name === d.nonStriker ? 'not out' : '');
+      return `<tr><td>${escapeHtml(name)}</td><td class="muted">${status}</td><td>${s.runs}</td><td>${s.balls}</td><td>${s.fours}</td><td>${s.sixes}</td><td>${sr}</td></tr>`;
+    }).join('');
 
-  const yetToBat = battingTeamPlayers.filter(p => !battedOrder.includes(p));
+    const yetToBat = battingTeamPlayers.filter(p => !battedOrder.includes(p));
 
-  const extrasRuns = log.filter(e => e.extra).reduce((sum, e) => sum + e.r, 0);
-  const wides = log.filter(e => e.extra === 'wd').reduce((s, e) => s + e.r, 0);
-  const noballs = log.filter(e => e.extra === 'nb').reduce((s, e) => s + e.r, 0);
-  const byes = log.filter(e => e.extra === 'b').reduce((s, e) => s + e.r, 0);
-  const legbyes = log.filter(e => e.extra === 'lb').reduce((s, e) => s + e.r, 0);
+    const extrasRuns = log.filter(e => e.extra).reduce((sum, e) => sum + e.r, 0);
+    const wides = log.filter(e => e.extra === 'wd').reduce((s, e) => s + e.r, 0);
+    const noballs = log.filter(e => e.extra === 'nb').reduce((s, e) => s + e.r, 0);
+    const byes = log.filter(e => e.extra === 'b').reduce((s, e) => s + e.r, 0);
+    const legbyes = log.filter(e => e.extra === 'lb').reduce((s, e) => s + e.r, 0);
 
-  const bowlingRows = Object.keys(bowlingStats).map(name => {
-    const s = bowlingStats[name];
-    const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
-    const eco = s.balls ? (s.runs / (s.balls / 6)).toFixed(2) : '0.00';
-    return `<tr><td>${escapeHtml(name)}</td><td>${overs}</td><td>${s.runs}</td><td>${s.wickets}</td><td>${s.noballs || 0}</td><td>${s.wides || 0}</td><td>${eco}</td></tr>`;
-  }).join('');
+    const bowlingRows = Object.keys(bowlingStats).map(name => {
+      const s = bowlingStats[name];
+      const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
+      const eco = s.balls ? (s.runs / (s.balls / 6)).toFixed(2) : '0.00';
+      return `<tr><td>${escapeHtml(name)}</td><td>${overs}</td><td>${s.runs}</td><td>${s.wickets}</td><td>${s.noballs || 0}</td><td>${s.wides || 0}</td><td>${eco}</td></tr>`;
+    }).join('');
 
-  let runTotal = 0, ballTotal = 0, wktCount = 0;
-  const fow = [];
-  log.forEach(e => {
-    runTotal += e.r;
-    if (e.legal) ballTotal += 1;
-    if (e.wicket) {
-      wktCount += 1;
-      fow.push({ name: e.outPlayer, score: runTotal, wkt: wktCount, over: `${Math.floor(ballTotal / 6)}.${ballTotal % 6}` });
-    }
-  });
-  const fowHtml = fow.map(w => `<tr><td>${escapeHtml(w.name)}</td><td>${w.score}-${w.wkt}</td><td>${w.over}</td></tr>`).join('');
+    let runTotal = 0, ballTotal = 0, wktCount = 0;
+    const fow = [];
+    log.forEach(e => {
+      runTotal += e.r;
+      if (e.legal) ballTotal += 1;
+      if (e.wicket) {
+        wktCount += 1;
+        fow.push({ name: e.outPlayer, score: runTotal, wkt: wktCount, over: `${Math.floor(ballTotal / 6)}.${ballTotal % 6}` });
+      }
+    });
+    const fowHtml = fow.map(w => `<tr><td>${escapeHtml(w.name)}</td><td>${w.score}-${w.wkt}</td><td>${w.over}</td></tr>`).join('');
 
-  const runRate = balls ? ((d.score.runs || 0) / (balls / 6)).toFixed(2) : '0.00';
+    const runRate = balls ? ((d.score.runs || 0) / (balls / 6)).toFixed(2) : '0.00';
 
-  $('#scorecardBody').innerHTML = `
-    <p class="muted">Toss: ${d.toss ? `${escapeHtml(d.toss.winner)} chose to ${d.toss.decision}` : '—'}</p>
-    <table>
-      <thead><tr><th>Batter</th><th></th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead>
-      <tbody>${battingRows || '<tr><td colspan="7">No batters yet</td></tr>'}</tbody>
-    </table>
-    <p><strong>Extras</strong> ${extrasRuns} (b ${byes}, lb ${legbyes}, w ${wides}, nb ${noballs})</p>
-    <p><strong>Total</strong> ${d.score?.runs || 0}-${d.score?.wickets || 0} (${Math.floor(balls / 6)}.${balls % 6} overs, RR: ${runRate})</p>
-    ${yetToBat.length ? `<p class="muted"><strong>Yet to bat</strong> ${yetToBat.map(escapeHtml).join(', ')}</p>` : ''}
-    <table>
-      <thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>NB</th><th>WD</th><th>ECO</th></tr></thead>
-      <tbody>${bowlingRows || '<tr><td colspan="7">No overs bowled yet</td></tr>'}</tbody>
-    </table>
-    ${fow.length ? `
+    $('#scorecardBody').innerHTML = `
+      <p class="muted">Toss: ${d.toss ? `${escapeHtml(d.toss.winner)} chose to ${d.toss.decision}` : '—'}</p>
       <table>
-        <thead><tr><th>Fall of Wickets</th><th>Score</th><th>Over</th></tr></thead>
-        <tbody>${fowHtml}</tbody>
-      </table>` : ''}
-  `;
-  nav('scorecard');
-});
+        <thead><tr><th>Batter</th><th></th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead>
+        <tbody>${battingRows || '<tr><td colspan="7">No batters yet</td></tr>'}</tbody>
+      </table>
+      <p><strong>Extras</strong> ${extrasRuns} (b ${byes}, lb ${legbyes}, w ${wides}, nb ${noballs})</p>
+      <p><strong>Total</strong> ${d.score?.runs || 0}-${d.score?.wickets || 0} (${Math.floor(balls / 6)}.${balls % 6} overs, RR: ${runRate})</p>
+      ${yetToBat.length ? `<p class="muted"><strong>Yet to bat</strong> ${yetToBat.map(escapeHtml).join(', ')}</p>` : ''}
+      <table>
+        <thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>NB</th><th>WD</th><th>ECO</th></tr></thead>
+        <tbody>${bowlingRows || '<tr><td colspan="7">No overs bowled yet</td></tr>'}</tbody>
+      </table>
+      ${fow.length ? `
+        <table>
+          <thead><tr><th>Fall of Wickets</th><th>Score</th><th>Over</th></tr></thead>
+          <tbody>${fowHtml}</tbody>
+        </table>` : ''}
+    `;
+    nav('scorecard');
+  });
+}
 
 // ---------------- Home: session lists ----------------
 db.collection('sessions').orderBy('createdAt', 'desc').limit(25).onSnapshot(snap => {
   const live = $('#liveSessionList'), past = $('#pastSessionList');
+  if (!live || !past) return;
   live.innerHTML = ''; past.innerHTML = '';
   snap.forEach(doc => {
     const d = doc.data();
