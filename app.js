@@ -5,9 +5,12 @@
 // so a session updates live everywhere the code is entered.
 //
 // Match flow:
-//   1. Setup: team names, overs, toss, then build Team A / Team B
-//      player lists (from roster and/or free-typed names — a name
-//      can be added to both teams to balance sides).
+//   1. Setup: team names, overs, toss (Team A calls heads/tails,
+//      then the coin decides, then the winner picks bat/bowl),
+//      then build Team A / Team B player lists (from roster
+//      and/or free-typed names — a name can be added to both
+//      teams to balance sides, either via the "common players"
+//      list or the "add to both" checkbox next to a typed name).
 //   2. Live - openers: pick striker + non-striker for the batting
 //      team (decided by the toss).
 //   3. Live - bowler: pick the opening bowler. After every
@@ -143,6 +146,13 @@ function fallbackAvatar(name) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231A4433"/><text x="32" y="40" font-size="26" fill="%23E8B33D" text-anchor="middle" font-family="Arial">${initial}</text></svg>`;
   return `data:image/svg+xml,${svg}`;
 }
+// Look up an avatar for any name in play — roster players use their real
+// photo (or roster fallback), free-typed / ad-hoc names get an initials
+// avatar so every player, roster or not, shows as "name + image".
+function avatarFor(name) {
+  const rosterPlayer = rosterCache.find(p => p.name === name);
+  return (rosterPlayer && rosterPlayer.photo) || fallbackAvatar(name);
+}
 
 db.collection('players').orderBy('name').onSnapshot(snap => {
   rosterCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -182,21 +192,40 @@ function genCode() { return String(Math.floor(10000 + Math.random() * 90000)); }
 // draft = the setup-in-progress session, before it goes live.
 let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names] }
 
+function resetTossUI() {
+  tossWinner = null;
+  tossDecision = null;
+  tossCall = null;
+  tossFlip = null;
+  if ($('#tossResult')) $('#tossResult').hidden = true;
+  if ($('#tossFlipOutcome')) $('#tossFlipOutcome').textContent = '';
+  $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+  $$('.callBtn').forEach(x => x.classList.remove('is-active'));
+  if ($('#coinFlipBtn')) $('#coinFlipBtn').disabled = true;
+  if ($('#coinFlipHint')) $('#coinFlipHint').hidden = false;
+  updateTossCallPrompt();
+}
+
+function updateTossCallPrompt() {
+  const prompt = $('#tossCallPrompt');
+  if (!prompt) return;
+  const teamA = ($('#teamAName') && $('#teamAName').value.trim()) || 'Team A';
+  prompt.textContent = `${teamA}, call it in the air:`;
+}
+
 if ($('#createSessionBtn')) {
   $('#createSessionBtn').addEventListener('click', async () => {
     const code = genCode();
     const ownerToken = uid();
     localStorage.setItem('owner_' + code, ownerToken);
     draft = { code, ownerToken, teamAPlayers: [], teamBPlayers: [] };
-    tossWinner = null;
-    tossDecision = null;
     $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
-    $('#tossResult').hidden = true;
-    $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
     $('#teamAName').value = '';
     $('#teamBName').value = '';
     $('#oversInput').value = 20;
     if ($('#balanceBothTeamsCheck')) $('#balanceBothTeamsCheck').checked = false;
+    if ($('#commonPlayersDetails')) $('#commonPlayersDetails').open = false;
+    resetTossUI();
     renderTeamPlayerPickers();
     await db.collection('sessions').doc(code).set({
       code,
@@ -221,18 +250,48 @@ async function openSessionByCode(code) {
 }
 
 // ---------------- Setup: toss ----------------
+// Flow: Team A calls heads or tails -> coin is flipped -> the actual
+// result is compared against Team A's call to find the toss winner ->
+// the winner picks to bat or bowl.
 let tossWinner = null;
 let tossDecision = null;
+let tossCall = null;   // 'heads' | 'tails' — Team A's call
+let tossFlip = null;   // 'heads' | 'tails' — the actual flip result
+
+// Keep the "Team A, call it..." label in sync if the name is typed after load.
+if ($('#teamAName')) $('#teamAName').addEventListener('input', updateTossCallPrompt);
+
+$$('.callBtn').forEach(btn => btn.addEventListener('click', () => {
+  tossCall = btn.dataset.call;
+  $$('.callBtn').forEach(b => b.classList.remove('is-active'));
+  btn.classList.add('is-active');
+  // A fresh call invalidates any previous flip/decision.
+  tossWinner = null;
+  tossDecision = null;
+  tossFlip = null;
+  if ($('#tossResult')) $('#tossResult').hidden = true;
+  if ($('#coinFlipBtn')) $('#coinFlipBtn').disabled = false;
+  if ($('#coinFlipHint')) $('#coinFlipHint').hidden = true;
+}));
 
 if ($('#coinFlipBtn')) {
   $('#coinFlipBtn').addEventListener('click', () => {
+    if (!tossCall) { toast('Call heads or tails first'); return; }
     const teamA = $('#teamAName').value.trim() || 'Team A';
     const teamB = $('#teamBName').value.trim() || 'Team B';
-    tossWinner = Math.random() < 0.5 ? teamA : teamB;
+    tossFlip = Math.random() < 0.5 ? 'heads' : 'tails';
+    tossWinner = (tossFlip === tossCall) ? teamA : teamB;
+    tossDecision = null;
+    $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+    if ($('#tossFlipOutcome')) {
+      $('#tossFlipOutcome').textContent =
+        `Coin shows ${tossFlip.toUpperCase()} — ${teamA} called ${tossCall}.`;
+    }
     $('#tossWinnerName').textContent = tossWinner;
     $('#tossResult').hidden = false;
   });
 }
+
 $$('#tossResult .segmented button').forEach(b => b.addEventListener('click', () => {
   tossDecision = b.dataset.choice;
   $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
@@ -286,16 +345,54 @@ function renderTeamPlayerPickers() {
     : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
   rosterAList.innerHTML = rosterOptionHtml('A');
   rosterBList.innerHTML = rosterOptionHtml('B');
+  renderCommonPlayersList();
   renderTeamChips();
+}
+
+// The "common players" collapsible: one checkbox per roster player. Ticking
+// it adds that player to BOTH teams at once (and unticking removes them
+// from both) — regardless of which team's roster list they were ticked in
+// before.
+function renderCommonPlayersList() {
+  if (!draft) return;
+  const list = $('#commonPlayersList');
+  if (!list) return;
+  list.innerHTML = rosterCache.length
+    ? rosterCache.map(p => {
+        const inBoth = draft.teamAPlayers.includes(p.name) && draft.teamBPlayers.includes(p.name);
+        return `
+        <label style="
+            display:flex;
+            align-items:center;
+            gap:10px;
+            padding:8px 12px;
+            margin-bottom:8px;
+            background:var(--pitch-800);
+            border:1px solid var(--line);
+            border-radius:10px;
+            cursor:pointer;
+            color:var(--cream);
+        ">
+            <input type="checkbox" data-common-player="${escapeHtml(p.name)}" value="${escapeHtml(p.name)}" ${inBoth ? 'checked' : ''}>
+            <img src="${p.photo || fallbackAvatar(p.name)}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid var(--line);">
+            <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+        </label>`;
+      }).join('')
+    : '<p class="emptyState" style="margin:0">No roster players yet.</p>';
 }
 
 function renderTeamChips() {
   if (!draft) return;
-  const chip = (name, team) => `
-    <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
+  const chip = (name, team) => {
+    const inBoth = draft.teamAPlayers.includes(name) && draft.teamBPlayers.includes(name);
+    return `
+    <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px 4px 4px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
+      <img src="${avatarFor(name)}" style="width:22px;height:22px;border-radius:50%;object-fit:cover;">
       ${escapeHtml(name)}
+      ${inBoth ? '<span title="Plays for both teams" style="font-size:11px;">🔁</span>' : ''}
       <button type="button" data-remove-${team.toLowerCase()}="${escapeHtml(name)}" style="border:none;background:transparent;cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
     </span>`;
+  };
   if ($('#teamAChips')) {
     $('#teamAChips').innerHTML = draft.teamAPlayers.length
       ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
@@ -313,7 +410,22 @@ function toggleTeamPlayer(team, name, checked) {
   const idx = list.indexOf(name);
   if (checked && idx === -1) list.push(name);
   if (!checked && idx > -1) list.splice(idx, 1);
+  syncCommonCheckbox(name);
   renderTeamChips();
+}
+
+// Keep the common-players checkbox for `name` in sync without rebuilding
+// the whole list (avoids losing scroll position / focus).
+function syncCommonCheckbox(name) {
+  if (!draft) return;
+  const cb = $(`input[data-common-player="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = draft.teamAPlayers.includes(name) && draft.teamBPlayers.includes(name);
+}
+
+// Keep a team roster checkbox in sync without rebuilding the whole list.
+function syncRosterCheckbox(team, name) {
+  const cb = $(`input[data-roster-team="${team}"][value="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = draft['team' + team + 'Players'].includes(name);
 }
 
 if ($('#teamARosterList')) {
@@ -330,6 +442,21 @@ if ($('#teamBRosterList')) {
     toggleTeamPlayer('B', cb.value, cb.checked);
   });
 }
+if ($('#commonPlayersList')) {
+  $('#commonPlayersList').addEventListener('change', e => {
+    const cb = e.target.closest('input[data-common-player]');
+    if (!cb || !draft) return;
+    const name = cb.value;
+    ['A', 'B'].forEach(team => {
+      const list = draft['team' + team + 'Players'];
+      const idx = list.indexOf(name);
+      if (cb.checked && idx === -1) list.push(name);
+      if (!cb.checked && idx > -1) list.splice(idx, 1);
+      syncRosterCheckbox(team, name);
+    });
+    renderTeamChips();
+  });
+}
 
 function removeTeamPlayer(team, name) {
   const list = draft['team' + team + 'Players'];
@@ -337,6 +464,7 @@ function removeTeamPlayer(team, name) {
   if (idx > -1) list.splice(idx, 1);
   const cb = $(`input[data-roster-team="${team}"][value="${CSS.escape(name)}"]`);
   if (cb) cb.checked = false;
+  syncCommonCheckbox(name);
   renderTeamChips();
 }
 
@@ -364,6 +492,8 @@ if ($('#addTeamAPlayerBtn')) {
     if (!draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
     if (both && !draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
     input.value = '';
+    input.focus();
+    syncCommonCheckbox(name);
     renderTeamChips();
   });
 }
@@ -376,9 +506,14 @@ if ($('#addTeamBPlayerBtn')) {
     if (!draft.teamBPlayers.includes(name)) draft.teamBPlayers.push(name);
     if (both && !draft.teamAPlayers.includes(name)) draft.teamAPlayers.push(name);
     input.value = '';
+    input.focus();
+    syncCommonCheckbox(name);
     renderTeamChips();
   });
 }
+// Pressing Enter in the ad-hoc name field adds the player too.
+if ($('#teamAAdHocInput')) $('#teamAAdHocInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#addTeamAPlayerBtn').click(); } });
+if ($('#teamBAdHocInput')) $('#teamBAdHocInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('#addTeamBPlayerBtn').click(); } });
 
 // ---------------- Setup: start match ----------------
 if ($('#startMatchBtn')) {
@@ -389,6 +524,7 @@ if ($('#startMatchBtn')) {
 
     if (draft.teamAPlayers.length < 2) { toast(`Add at least 2 players to ${teamA}`); return; }
     if (draft.teamBPlayers.length < 2) { toast(`Add at least 2 players to ${teamB}`); return; }
+    if (!tossCall) { toast('Team A must call heads or tails first'); return; }
     if (!tossWinner) { toast('Flip the coin to decide the toss first'); return; }
     if (!tossDecision) { toast('Pick bat or bowl after the toss'); return; }
 
@@ -400,7 +536,7 @@ if ($('#startMatchBtn')) {
 
     await db.collection('sessions').doc(draft.code).update({
       teamA, teamB, overs,
-      toss: { winner: tossWinner, decision: tossDecision },
+      toss: { call: tossCall, flip: tossFlip, winner: tossWinner, decision: tossDecision },
       teamAPlayers: draft.teamAPlayers,
       teamBPlayers: draft.teamBPlayers,
       battingTeam, bowlingTeam,
