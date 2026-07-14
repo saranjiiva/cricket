@@ -325,7 +325,7 @@ select{min-width:110px}
     <ul class="sessionList" id="pastSessionList"></ul>
   </section>
 
-  <!-- ============ SESSION SETUP ============ -->
+ <!-- ============ SESSION SETUP ============ -->
   <section class="view" id="view-setup" data-view="setup" hidden>
     <div class="sessionCodeBanner" id="setupCodeBanner"></div>
     <div class="setupCard">
@@ -338,9 +338,38 @@ select{min-width:110px}
 
      <h2 style="margin-top:20px;">Toss</h2>
 
+<!-- Step 1: Team A calls it in the air, before the coin is flipped -->
+<div id="tossCallSection" style="margin:14px 0;">
+  <p class="muted" id="tossCallPrompt" style="text-align:center;margin:0 0 10px;">Team A, call it in the air:</p>
+  <div style="display:flex;justify-content:center;gap:15px;flex-wrap:wrap;">
+    <button type="button" class="callBtn" data-call="heads"
+      style="
+        padding:10px 22px;
+        border:2px solid #C88719;
+        border-radius:30px;
+        background:#fff;
+        color:#5A3900;
+        font-size:15px;
+        font-weight:bold;
+        cursor:pointer;
+      ">🪙 Heads</button>
+    <button type="button" class="callBtn" data-call="tails"
+      style="
+        padding:10px 22px;
+        border:2px solid #C88719;
+        border-radius:30px;
+        background:#fff;
+        color:#5A3900;
+        font-size:15px;
+        font-weight:bold;
+        cursor:pointer;
+      ">🪙 Tails</button>
+  </div>
+</div>
+
 <div style="display:flex;justify-content:center;margin:20px 0;">
 
-    <button id="coinFlipBtn" type="button"
+    <button id="coinFlipBtn" type="button" disabled
         style="
             width:120px;
             height:120px;
@@ -362,6 +391,7 @@ select{min-width:110px}
                 inset 0 3px 8px rgba(255,255,255,.5),
                 inset 0 -4px 8px rgba(0,0,0,.35);
             transition:transform .8s;
+            opacity:1;
         "
 
         onclick="
@@ -374,13 +404,17 @@ select{min-width:110px}
 
 </div>
 
+<p class="muted" id="coinFlipHint" style="text-align:center;margin-top:-14px;">Make a call above to enable the flip</p>
+
 <div class="tossResult" id="tossResult" hidden>
+
+    <p style="text-align:center;font-size:15px;" id="tossFlipOutcome"></p>
 
     <p style="text-align:center;font-size:18px;">
         <strong id="tossWinnerName"></strong> won the toss
     </p>
 
-    <div style="display:flex;justify-content:center;gap:15px;flex-wrap:wrap;">
+    <div class="segmented" style="display:flex;justify-content:center;gap:15px;flex-wrap:wrap;">
 
         <button data-choice="bat"
             style="
@@ -431,6 +465,13 @@ select{min-width:110px}
         <button class="btn" id="addTeamBPlayerBtn" type="button">Add</button>
       </div>
       <div id="teamBChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+
+      <!-- Collapsible: roster players who should be added to BOTH teams at once -->
+      <details id="commonPlayersDetails" style="margin:16px 0;border:1px solid var(--line, #ddd);border-radius:10px;padding:10px 14px;">
+        <summary style="cursor:pointer;font-weight:600;">🔁 Common players (play for both teams)</summary>
+        <p class="muted" style="margin:8px 0">Tick a roster player here to add them to Team A and Team B at the same time — handy for a guest umpire-turned-fielder or a kid who plays both innings.</p>
+        <div id="commonPlayersList" style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 2px"></div>
+      </details>
 
       <label style="display:flex;align-items:center;gap:6px;margin:6px 0 20px">
         <input type="checkbox" id="balanceBothTeamsCheck">
