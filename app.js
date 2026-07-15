@@ -839,7 +839,22 @@ async function recordBall(opts) {
     ensureBowler(bowlingStats, bowlerName);
 
     const legal = !(opts.extra === 'wd' || opts.extra === 'nb');
-    const runsAdded = opts.extra ? 1 : (opts.r || 0);
+    // Runs actually run between the wickets by the batsmen — for a wide or
+    // no-ball this is on TOP of the fixed 1-run penalty; for a bye or leg
+    // bye there's no penalty, so this is the whole total. Strike rotation
+    // below is based on this "runs run" count, not the total added to the
+    // score (which, for wd/nb, includes the penalty that nobody ran for).
+    const extraRunsRun = (opts.extra === 'wd' || opts.extra === 'nb' || opts.extra === 'b' || opts.extra === 'lb')
+      ? Math.max(0, parseInt(opts.r, 10) || 0)
+      : 0;
+    let runsAdded;
+    if (opts.extra === 'wd' || opts.extra === 'nb') {
+      runsAdded = 1 + extraRunsRun;
+    } else if (opts.extra === 'b' || opts.extra === 'lb') {
+      runsAdded = extraRunsRun;
+    } else {
+      runsAdded = opts.r || 0;
+    }
     const entry = {
       r: runsAdded, extra: opts.extra || null, wicket: !!opts.wicket, legal,
       ts: Date.now(), batter: strikerName, bowler: bowlerName,
