@@ -21,6 +21,13 @@
 //      until the next batter is chosen from the remaining team.
 //      Caught / run out / stumped ask which fielder was involved,
 //      picked from the fielding side's own lineup (no free text).
+//   4b. Live - extras (wide / no-ball / bye / leg-bye): tapping
+//      one opens a small collapsible dialog. The common case
+//      (no runs run, strike unchanged) is a single tap; an
+//      optional "Strike changed?" section lets the scorer record
+//      runs actually run between the wickets (or a boundary) and
+//      whether the batters crossed, so strike rotates correctly
+//      even on an extra.
 //   5. Innings 1 ends automatically (all overs bowled, or all
 //      out) — the app snapshots that innings, sets the chase
 //      target (innings-1 runs + 1), swaps batting/bowling teams
@@ -35,6 +42,436 @@
 //   7. On match end, the owner can view the full two-innings
 //      scorecard, see Man of the Match plus match awards (most
 //      runs, most wickets, best economy, best strike rate), then
+//      either proceed to another match in the same series (same
+//      team names — same lineups, or reshuffle lineups) or end
+//      the series and view Man of the Series + series awards
+//      aggregated across every completed match in that series.
+// ============================================================
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+function toast(msg) {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.hidden = true), 2200);
+}
+
+function uid() {
+  return (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+}
+
+function resizeImageFile(file, maxDim = 300, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = e => (img.src = e.target.result);
+    reader.onerror = reject;
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > height && width > maxDim) { height *= maxDim / width; width = maxDim; }
+      else if (height > maxDim) { width *= maxDim / height; height = maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---------------- Navigation ----------------
+const navStack = ['home'];
+function nav(view, push = true) {
+  $$('.view').forEach(v => (v.hidden = v.dataset.view !== view));
+  if (push) navStack.push(view);
+}
+$$('[data-nav]').forEach(b => b.addEventListener('click', () => nav(b.dataset.nav)));
+$$('[data-nav-back]').forEach(b => b.addEventListener('click', () => {
+  navStack.pop();
+  nav(navStack[navStack.length - 1] || 'home', false);
+}));
+
+// ---------------- Manage drawer ----------------
+const manageDrawer = $('#manageDrawer');
+if ($('#manageToggleBtn')) {
+  $('#manageToggleBtn').addEventListener('click', () => {
+    manageDrawer.classList.toggle('is-open');
+    $('#manageToggleBtn').classList.toggle('is-active');
+  });
+}
+$$('.tabs button').forEach(tabBtn => {
+  tabBtn.addEventListener('click', () => {
+    $$('.tabs button').forEach(b => b.classList.remove('is-active'));
+    tabBtn.classList.add('is-active');
+    $$('.tabPanel').forEach(p => p.classList.toggle('is-active', p.dataset.panel === tabBtn.dataset.tab));
+  });
+});
+
+// ---------------- Players (roster) ----------------
+let rosterCache = [];
+let pendingPhoto = null;
+
+if ($('#playerPhotoInput')) {
+  $('#playerPhotoInput').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    pendingPhoto = await resizeImageFile(file, 200, 0.75);
+    $('#playerPhotoPreview').src = pendingPhoto;
+    $('#playerPhotoPreview').hidden = false;
+    $('#photoPickerPlaceholder').hidden = true;
+  });
+}
+
+if ($('#playerAddForm')) {
+  $('#playerAddForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#playerNameInput').value.trim();
+    if (!name) return;
+    await db.collection('players').add({
+      name,
+      role: $('#playerRoleInput').value,
+      photo: pendingPhoto || null,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    e.target.reset();
+    pendingPhoto = null;
+    $('#playerPhotoPreview').hidden = true;
+    $('#photoPickerPlaceholder').hidden = false;
+    toast('Player added');
+  });
+}
+
+function renderRoster() {
+  const grid = $('#rosterGrid');
+  if (!grid) return;
+  grid.innerHTML = rosterCache.length ? '' : '<p class="emptyState">No players yet — add one above.</p>';
+  rosterCache.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'playerCard';
+    card.innerHTML = `
+      <button class="cardDelete" title="Remove">×</button>
+      <img class="playerCard__photo" src="${p.photo || fallbackAvatar(p.name)}" alt="">
+      <div class="playerCard__name">${escapeHtml(p.name)}</div>
+      <div class="playerCard__role">${roleLabel(p.role)}</div>`;
+    card.querySelector('.cardDelete').addEventListener('click', () => db.collection('players').doc(p.id).delete());
+    grid.appendChild(card);
+  });
+  // Setup screen's team pickers are roster-driven, keep them fresh too.
+  if (draft) renderTeamPlayerPickers();
+}
+function roleLabel(r) { return { bat: 'Batter', bowl: 'Bowler', all: 'All-rounder', wk: 'Wicketkeeper' }[r] || r; }
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function fallbackAvatar(name) {
+  const initial = (name || '?')[0].toUpperCase();
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231A4433"/><text x="32" y="40" font-size="26" fill="%23E8B33D" text-anchor="middle" font-family="Arial">${initial}</text></svg>`;
+  return `data:image/svg+xml,${svg}`;
+}
+// Look up an avatar for any name in play — roster players use their real
+// photo (or roster fallback), free-typed / ad-hoc names get an initials
+// avatar so every player, roster or not, shows as "name + image".
+function avatarFor(name) {
+  const rosterPlayer = rosterCache.find(p => p.name === name);
+  return (rosterPlayer && rosterPlayer.photo) || fallbackAvatar(name);
+}
+
+db.collection('players').orderBy('name').onSnapshot(snap => {
+  rosterCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  renderRoster();
+});
+
+// ---------------- Gallery ----------------
+if ($('#galleryPhotoInput')) {
+  $('#galleryPhotoInput').addEventListener('change', async e => {
+    const files = [...e.target.files];
+    for (const file of files) {
+      const dataUrl = await resizeImageFile(file, 900, 0.75);
+      await db.collection('gallery').add({ photo: dataUrl, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    }
+    e.target.value = '';
+    toast(files.length > 1 ? 'Photos uploaded' : 'Photo uploaded');
+  });
+}
+
+db.collection('gallery').orderBy('createdAt', 'desc').limit(60).onSnapshot(snap => {
+  const grid = $('#galleryGrid');
+  if (!grid) return;
+  grid.innerHTML = snap.empty ? '<p class="emptyState">No photos yet — upload some above.</p>' : '';
+  snap.forEach(doc => {
+    const d = doc.data();
+    const item = document.createElement('div');
+    item.className = 'galleryItem';
+    item.innerHTML = `<img src="${d.photo}" alt=""><button class="cardDelete" style="top:6px;right:6px" title="Remove">×</button>`;
+    item.querySelector('.cardDelete').addEventListener('click', () => db.collection('gallery').doc(doc.id).delete());
+    grid.appendChild(item);
+  });
+});
+
+// ---------------- Sessions: create / join / list ----------------
+function genCode() { return String(Math.floor(10000 + Math.random() * 90000)); }
+
+// draft = the setup-in-progress session, before it goes live.
+// seriesId links every match started via "proceed to next match" so
+// series-wide awards can be aggregated later; seriesMatchNumber is this
+// match's position within that series.
+let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names], seriesId, seriesMatchNumber }
+
+function resetTossUI() {
+  tossWinner = null;
+  tossDecision = null;
+  tossCall = null;
+  tossFlip = null;
+  if ($('#tossResult')) $('#tossResult').hidden = true;
+  if ($('#tossFlipOutcome')) $('#tossFlipOutcome').textContent = '';
+  $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+  $$('.callBtn').forEach(x => x.classList.remove('is-active'));
+  if ($('#coinFlipBtn')) $('#coinFlipBtn').disabled = true;
+  if ($('#coinFlipHint')) $('#coinFlipHint').hidden = false;
+  updateTossCallPrompt();
+}
+
+function updateTossCallPrompt() {
+  const prompt = $('#tossCallPrompt');
+  if (!prompt) return;
+  const teamA = ($('#teamAName') && $('#teamAName').value.trim()) || 'Team A';
+  prompt.textContent = `${teamA}, call it in the air:`;
+}
+
+// Begins a fresh setup draft. `prefill` lets "proceed to next match" carry
+// over the series id/number, team names, and (optionally) the previous
+// lineups, so the owner isn't forced to retype anything that hasn't changed.
+async function beginSetupDraft(prefill = {}) {
+  const code = genCode();
+  const ownerToken = uid();
+  localStorage.setItem('owner_' + code, ownerToken);
+  draft = {
+    code,
+    ownerToken,
+    teamAPlayers: prefill.teamAPlayers ? [...prefill.teamAPlayers] : [],
+    teamBPlayers: prefill.teamBPlayers ? [...prefill.teamBPlayers] : [],
+    seriesId: prefill.seriesId || code,
+    seriesMatchNumber: prefill.seriesMatchNumber || 1,
+  };
+  $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
+  $('#teamAName').value = prefill.teamAName || '';
+  $('#teamBName').value = prefill.teamBName || '';
+  $('#oversInput').value = prefill.overs || 20;
+  if ($('#balanceBothTeamsCheck')) $('#balanceBothTeamsCheck').checked = false;
+  if ($('#commonPlayersDetails')) $('#commonPlayersDetails').open = false;
+  resetTossUI();
+  renderTeamPlayerPickers();
+  await db.collection('sessions').doc(code).set({
+    code,
+    ownerToken,
+    status: 'setup',
+    seriesId: draft.seriesId,
+    seriesMatchNumber: draft.seriesMatchNumber,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  nav('setup');
+}
+
+if ($('#createSessionBtn')) {
+  $('#createSessionBtn').addEventListener('click', () => beginSetupDraft());
+}
+
+if ($('#joinSessionBtn')) {
+  $('#joinSessionBtn').addEventListener('click', () => openSessionByCode($('#joinCodeInput').value.trim()));
+}
+
+async function openSessionByCode(code) {
+  if (!/^\d{5}$/.test(code)) { toast('Enter a valid 5-digit code'); return; }
+  const doc = await db.collection('sessions').doc(code).get();
+  if (!doc.exists) { toast('No session found with that code'); return; }
+  watchSession(code);
+  nav('live');
+}
+
+// ---------------- Setup: toss ----------------
+// Flow: Team A calls heads or tails -> coin is flipped -> the actual
+// result is compared against Team A's call to find the toss winner ->
+// the winner picks to bat or bowl.
+let tossWinner = null;
+let tossDecision = null;
+let tossCall = null;   // 'heads' | 'tails' — Team A's call
+let tossFlip = null;   // 'heads' | 'tails' — the actual flip result
+
+// Keep the "Team A, call it..." label in sync if the name is typed after load.
+if ($('#teamAName')) $('#teamAName').addEventListener('input', updateTossCallPrompt);
+
+$$('.callBtn').forEach(btn => btn.addEventListener('click', () => {
+  tossCall = btn.dataset.call;
+  $$('.callBtn').forEach(b => b.classList.remove('is-active'));
+  btn.classList.add('is-active');
+  // A fresh call invalidates any previous flip/decision.
+  tossWinner = null;
+  tossDecision = null;
+  tossFlip = null;
+  if ($('#tossResult')) $('#tossResult').hidden = true;
+  if ($('#coinFlipBtn')) $('#coinFlipBtn').disabled = false;
+  if ($('#coinFlipHint')) $('#coinFlipHint').hidden = true;
+}));
+
+if ($('#coinFlipBtn')) {
+  $('#coinFlipBtn').addEventListener('click', () => {
+    if (!tossCall) { toast('Call heads or tails first'); return; }
+    const teamA = $('#teamAName').value.trim() || 'Team A';
+    const teamB = $('#teamBName').value.trim() || 'Team B';
+    tossFlip = Math.random() < 0.5 ? 'heads' : 'tails';
+    tossWinner = (tossFlip === tossCall) ? teamA : teamB;
+    tossDecision = null;
+    $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+    if ($('#tossFlipOutcome')) {
+      $('#tossFlipOutcome').textContent =
+        `Coin shows ${tossFlip.toUpperCase()} — ${teamA} called ${tossCall}.`;
+    }
+    $('#tossWinnerName').textContent = tossWinner;
+    $('#tossResult').hidden = false;
+  });
+}
+
+$$('#tossResult .segmented button').forEach(b => b.addEventListener('click', () => {
+  tossDecision = b.dataset.choice;
+  $$('#tossResult .segmented button').forEach(x => x.classList.remove('is-active'));
+  b.classList.add('is-active');
+}));
+
+// ---------------- Setup: team player pickers ----------------
+function renderTeamPlayerPickers() {
+  if (!draft) return;
+  const rosterAList = $('#teamARosterList');
+  const rosterBList = $('#teamBRosterList');
+  if (!rosterAList || !rosterBList) return;
+  const rosterOptionHtml = (team) => rosterCache.length
+    ? rosterCache.map(p => `
+        <label style="
+            display:flex;
+            align-items:center;
+            gap:10px;
+            padding:8px 12px;
+            margin-bottom:8px;
+            background:var(--pitch-800);
+            border:1px solid var(--line);
+            border-radius:10px;
+            cursor:pointer;
+            color:var(--cream);
+        ">
+            <input
+                type="checkbox"
+                data-roster-team="${team}"
+                value="${escapeHtml(p.name)}"
+                ${draft['team' + team + 'Players'].includes(p.name) ? 'checked' : ''}
+            >
+            <img
+                src="${p.photo || fallbackAvatar(p.name)}"
+                style="
+                    width:36px;
+                    height:36px;
+                    border-radius:50%;
+                    object-fit:cover;
+                    border:1px solid var(--line);
+                "
+            >
+            <div style="display:flex;flex-direction:column;">
+                <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+                <small style="color:var(--gold);font-size:11px;">
+                    ${roleLabel(p.role)}
+                </small>
+            </div>
+        </label>
+    `).join('')
+    : '<p class="emptyState" style="margin:0">No roster players yet — add some in ⚙ Manage, or type a name below.</p>';
+  rosterAList.innerHTML = rosterOptionHtml('A');
+  rosterBList.innerHTML = rosterOptionHtml('B');
+  renderCommonPlayersList();
+  renderTeamChips();
+}
+
+// The "common players" collapsible: one checkbox per roster player. Ticking
+// it adds that player to BOTH teams at once (and unticking removes them
+// from both) — regardless of which team's roster list they were ticked in
+// before.
+function renderCommonPlayersList() {
+  if (!draft) return;
+  const list = $('#commonPlayersList');
+  if (!list) return;
+  list.innerHTML = rosterCache.length
+    ? rosterCache.map(p => {
+        const inBoth = draft.teamAPlayers.includes(p.name) && draft.teamBPlayers.includes(p.name);
+        return `
+        <label style="
+            display:flex;
+            align-items:center;
+            gap:10px;
+            padding:8px 12px;
+            margin-bottom:8px;
+            background:var(--pitch-800);
+            border:1px solid var(--line);
+            border-radius:10px;
+            cursor:pointer;
+            color:var(--cream);
+        ">
+            <input type="checkbox" data-common-player="${escapeHtml(p.name)}" value="${escapeHtml(p.name)}" ${inBoth ? 'checked' : ''}>
+            <img src="${p.photo || fallbackAvatar(p.name)}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid var(--line);">
+            <span style="font-weight:600;">${escapeHtml(p.name)}</span>
+        </label>`;
+      }).join('')
+    : '<p class="emptyState" style="margin:0">No roster players yet.</p>';
+}
+
+function renderTeamChips() {
+  if (!draft) return;
+  const chip = (name, team) => {
+    const inBoth = draft.teamAPlayers.includes(name) && draft.teamBPlayers.includes(name);
+    return `
+    <span style="background:#e8f0ea;border-radius:14px;padding:4px 10px 4px 4px;display:inline-flex;align-items:center;gap:6px;font-size:13px">
+      <img src="${avatarFor(name)}" style="width:22px;height:22px;border-radius:50%;object-fit:cover;">
+      ${escapeHtml(name)}
+      ${inBoth ? '<span title="Plays for both teams" style="font-size:11px;">🔁</span>' : ''}
+      <button type="button" data-remove-${team.toLowerCase()}="${escapeHtml(name)}" style="border:none;background:transparent;cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
+    </span>`;
+  };
+  if ($('#teamAChips')) {
+    $('#teamAChips').innerHTML = draft.teamAPlayers.length
+      ? draft.teamAPlayers.map(n => chip(n, 'A')).join('')
+      : '<span class="muted">No players added yet</span>';
+  }
+  if ($('#teamBChips')) {
+    $('#teamBChips').innerHTML = draft.teamBPlayers.length
+      ? draft.teamBPlayers.map(n => chip(n, 'B')).join('')
+      : '<span class="muted">No players added yet</span>';
+  }
+}
+
+function toggleTeamPlayer(team, name, checked) {
+  const list = draft['team' + team + 'Players'];
+  const idx = list.indexOf(name);
+  if (checked && idx === -1) list.push(name);
+  if (!checked && idx > -1) list.splice(idx, 1);
+  syncCommonCheckbox(name);
+  renderTeamChips();
+}
+
+// Keep the common-players checkbox for `name` in sync without rebuilding
+// the whole list (avoids losing scroll position / focus).
+function syncCommonCheckbox(name) {
+  if (!draft) return;
+  const cb = $(`input[data-common-player="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = draft.teamAPlayers.includes(name) && draft.teamBPlayers.includes(name);
+}
+
+// Keep a team roster checkbox in sync without rebuilding the whole list.
+function syncRosterCheckbox(team, name) {
+  const cb = $(`input[data-roster-team="${team}"][value="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = draft['team' + team + 'Players'].includes(name);
+}
+
+if ($('#teamARosterList')) {
+  $//      runs, most wickets, best economy, best strike rate), then
 //      either proceed to another match in the same series (same
 //      team names — same lineups, or reshuffle lineups) or end
 //      the series and view Man of the Series + series awards
