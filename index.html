@@ -185,7 +185,7 @@ select{min-width:110px}
 .field label{font-size:.78rem;color:var(--cream-dim)}
 .field input,.field select{width:100%}
 .fieldRow{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.panelActions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.panelActions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
 .coin{
   display:block;margin:20px auto;background:var(--gold);color:var(--pitch-950);border:none;
   width:90px;height:90px;border-radius:50%;font-size:2rem;box-shadow:var(--shadow);
@@ -202,6 +202,11 @@ select{min-width:110px}
 .namesText{font-family:var(--disp);font-size:1.1rem;margin-top:4px}
 .onCrease{display:flex;justify-content:center;gap:24px;margin:14px 0;font-size:.85rem;color:var(--cream-dim)}
 .onCrease b{color:var(--cream);font-weight:700}
+.chaseBar{
+  text-align:center;background:var(--pitch-800);border:1px solid var(--gold);
+  border-radius:var(--radius-sm);padding:10px 14px;margin:12px 0;font-size:.85rem;color:var(--cream-dim);
+}
+.chaseBar b{color:var(--gold-bright)}
 .ledStrip{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:16px 0;font-family:var(--mono)}
 .led{
   min-width:30px;height:30px;padding:0 6px;border-radius:6px;display:flex;align-items:center;justify-content:center;
@@ -225,6 +230,21 @@ select{min-width:110px}
 .scorecardBody table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:.85rem}
 .scorecardBody th,.scorecardBody td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}
 .scorecardBody th{color:var(--gold);font-weight:600;font-size:.75rem;text-transform:uppercase}
+
+/* ---------- awards / results ---------- */
+.resultBanner{text-align:center;font-family:var(--disp);font-size:1.3rem;color:var(--gold-bright);margin:10px 0 4px}
+.motmCard{
+  background:linear-gradient(160deg,var(--pitch-800),var(--pitch-900));
+  border:1px solid var(--gold);border-radius:var(--radius);padding:18px;text-align:center;margin:16px 0;
+}
+.motmCard__label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--gold)}
+.motmCard__name{font-family:var(--disp);font-size:1.6rem;font-weight:700;color:var(--gold-bright);margin:4px 0 0}
+.awardGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+@media (max-width:560px){.awardGrid{grid-template-columns:1fr}}
+.awardCard{background:var(--pitch-800);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px}
+.awardCard__label{font-size:.7rem;text-transform:uppercase;color:var(--gold);letter-spacing:.06em}
+.awardCard__name{font-weight:700;margin-top:2px}
+.awardCard__stat{font-size:.8rem;color:var(--cream-dim);font-family:var(--mono)}
 
 .toast{
   position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
@@ -496,7 +516,11 @@ select{min-width:110px}
       <div class="namesText" id="namesText">— vs —</div>
     </div>
     <div class="onCrease" id="onCrease"></div>
+    <div class="chaseBar" id="chaseBar" hidden></div>
     <div class="ledStrip" id="ledStrip" aria-label="Ball by ball"></div>
+
+    <!-- Innings break: shown between innings 1 and innings 2 -->
+    <div class="setupCard" id="inningsBreakPanel" hidden style="margin-top:12px"></div>
 
     <!-- Opening batters -->
     <div class="setupCard" id="openerPanel" hidden style="margin-top:12px">
@@ -548,7 +572,10 @@ select{min-width:110px}
             <option value="other">Other</option>
           </select>
         </div>
-        <div class="field"><label for="wicketFielderInput">Fielder (optional)</label><input type="text" id="wicketFielderInput" placeholder="e.g. name of catcher"></div>
+        <div class="field" id="wicketFielderField">
+          <label for="wicketFielderSelect">Fielder</label>
+          <select id="wicketFielderSelect"></select>
+        </div>
         <div class="panelActions">
           <button class="btn btn--ghost" id="wicketCancelBtn" type="button">Cancel</button>
           <button class="btn btn--primary" id="wicketConfirmBtn" type="button">Confirm wicket</button>
@@ -557,9 +584,49 @@ select{min-width:110px}
     </div>
 
     <div class="viewerNote" id="viewerNote" hidden>You're watching this session live. Only the device that created it can score.</div>
+    <div class="viewerNote" id="matchEndedBanner" hidden></div>
     <div class="panelActions">
       <button class="btn" id="viewScorecardBtn">Full scorecard</button>
-      <button class="btn btn--primary" id="endInningsBtn" hidden>End match</button>
+      <button class="btn btn--primary" id="viewResultBtn" hidden type="button">View result</button>
+      <button class="btn btn--primary" id="endInningsBtn" hidden type="button">End innings</button>
+    </div>
+  </section>
+
+  <!-- ============ MATCH RESULT / AWARDS ============ -->
+  <section class="view" id="view-matchresult" data-view="matchresult" hidden>
+    <h2 id="matchResultTitle">Match Result</h2>
+    <div id="matchResultBody"></div>
+    <div class="panelActions">
+      <button class="btn" id="mrScorecardBtn" type="button">Full scorecard</button>
+      <button class="btn btn--primary" id="mrNextMatchBtn" type="button">Proceed to next match</button>
+      <button class="btn btn--ghost" id="mrEndSeriesBtn" type="button">End series</button>
+    </div>
+    <div class="panelActions">
+      <button class="btn btn--ghost" data-nav="home" type="button">Back to home</button>
+    </div>
+  </section>
+
+  <!-- Next match dialog: same lineups, or reshuffle before the next toss -->
+  <div id="nextMatchDialog" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:50">
+    <div class="setupCard" style="max-width:360px;width:90%">
+      <h2>Next match</h2>
+      <p class="muted">Keep the same team lineups, or reshuffle players before the next match? Team names stay the same either way.</p>
+      <div class="panelActions" style="justify-content:center">
+        <button class="btn btn--primary" id="nmSameTeamsBtn" type="button">Same teams</button>
+        <button class="btn" id="nmReshuffleBtn" type="button">Reshuffle players</button>
+      </div>
+      <div class="panelActions">
+        <button class="btn btn--ghost" id="nmCancelBtn" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SERIES AWARDS ============ -->
+  <section class="view" id="view-seriesawards" data-view="seriesawards" hidden>
+    <h2>Series Awards</h2>
+    <div id="seriesAwardsBody"></div>
+    <div class="panelActions">
+      <button class="btn btn--ghost" data-nav="home" type="button">Back to home</button>
     </div>
   </section>
 
