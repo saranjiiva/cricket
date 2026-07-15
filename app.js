@@ -19,8 +19,26 @@
 //      bowler is excluded (can't bowl two overs running).
 //   4. Live - wicket: whenever a wicket falls, scoring is blocked
 //      until the next batter is chosen from the remaining team.
-//   5. Innings ends automatically (all overs bowled, or all out),
-//      the match ends, and the owner can view the full scorecard.
+//      Caught / run out / stumped ask which fielder was involved,
+//      picked from the fielding side's own lineup (no free text).
+//   5. Innings 1 ends automatically (all overs bowled, or all
+//      out) — the app snapshots that innings, sets the chase
+//      target (innings-1 runs + 1), swaps batting/bowling teams
+//      and moves to an "innings break" screen. The owner starts
+//      the 2nd innings when ready, then picks openers again.
+//   6. During the 2nd innings a live chase bar shows the target,
+//      runs still needed, balls left and required run rate. The
+//      match ends the instant the target is reached, or when the
+//      2nd innings finishes (all out / overs up) — whichever
+//      comes first — and the result (win margin / tie) is worked
+//      out from the two innings totals.
+//   7. On match end, the owner can view the full two-innings
+//      scorecard, see Man of the Match plus match awards (most
+//      runs, most wickets, best economy, best strike rate), then
+//      either proceed to another match in the same series (same
+//      team names — same lineups, or reshuffle lineups) or end
+//      the series and view Man of the Series + series awards
+//      aggregated across every completed match in that series.
 // ============================================================
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -190,7 +208,10 @@ db.collection('gallery').orderBy('createdAt', 'desc').limit(60).onSnapshot(snap 
 function genCode() { return String(Math.floor(10000 + Math.random() * 90000)); }
 
 // draft = the setup-in-progress session, before it goes live.
-let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names] }
+// seriesId links every match started via "proceed to next match" so
+// series-wide awards can be aggregated later; seriesMatchNumber is this
+// match's position within that series.
+let draft = null; // { code, ownerToken, teamAPlayers: [names], teamBPlayers: [names], seriesId, seriesMatchNumber }
 
 function resetTossUI() {
   tossWinner = null;
@@ -213,28 +234,42 @@ function updateTossCallPrompt() {
   prompt.textContent = `${teamA}, call it in the air:`;
 }
 
-if ($('#createSessionBtn')) {
-  $('#createSessionBtn').addEventListener('click', async () => {
-    const code = genCode();
-    const ownerToken = uid();
-    localStorage.setItem('owner_' + code, ownerToken);
-    draft = { code, ownerToken, teamAPlayers: [], teamBPlayers: [] };
-    $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
-    $('#teamAName').value = '';
-    $('#teamBName').value = '';
-    $('#oversInput').value = 20;
-    if ($('#balanceBothTeamsCheck')) $('#balanceBothTeamsCheck').checked = false;
-    if ($('#commonPlayersDetails')) $('#commonPlayersDetails').open = false;
-    resetTossUI();
-    renderTeamPlayerPickers();
-    await db.collection('sessions').doc(code).set({
-      code,
-      ownerToken,
-      status: 'setup',
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-    nav('setup');
+// Begins a fresh setup draft. `prefill` lets "proceed to next match" carry
+// over the series id/number, team names, and (optionally) the previous
+// lineups, so the owner isn't forced to retype anything that hasn't changed.
+async function beginSetupDraft(prefill = {}) {
+  const code = genCode();
+  const ownerToken = uid();
+  localStorage.setItem('owner_' + code, ownerToken);
+  draft = {
+    code,
+    ownerToken,
+    teamAPlayers: prefill.teamAPlayers ? [...prefill.teamAPlayers] : [],
+    teamBPlayers: prefill.teamBPlayers ? [...prefill.teamBPlayers] : [],
+    seriesId: prefill.seriesId || code,
+    seriesMatchNumber: prefill.seriesMatchNumber || 1,
+  };
+  $('#setupCodeBanner').textContent = `Session code  ${code.split('').join(' ')}`;
+  $('#teamAName').value = prefill.teamAName || '';
+  $('#teamBName').value = prefill.teamBName || '';
+  $('#oversInput').value = prefill.overs || 20;
+  if ($('#balanceBothTeamsCheck')) $('#balanceBothTeamsCheck').checked = false;
+  if ($('#commonPlayersDetails')) $('#commonPlayersDetails').open = false;
+  resetTossUI();
+  renderTeamPlayerPickers();
+  await db.collection('sessions').doc(code).set({
+    code,
+    ownerToken,
+    status: 'setup',
+    seriesId: draft.seriesId,
+    seriesMatchNumber: draft.seriesMatchNumber,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
   });
+  nav('setup');
+}
+
+if ($('#createSessionBtn')) {
+  $('#createSessionBtn').addEventListener('click', () => beginSetupDraft());
 }
 
 if ($('#joinSessionBtn')) {
@@ -551,6 +586,11 @@ if ($('#startMatchBtn')) {
       battingStats: {},
       bowlingStats: {},
       dismissedPlayers: [],
+      innings: 1,
+      target: null,
+      firstInnings: null,
+      seriesId: draft.seriesId,
+      seriesMatchNumber: draft.seriesMatchNumber,
       status: 'live',
     });
     watchSession(draft.code);
@@ -580,18 +620,66 @@ function populateSelect(sel, names) {
     : '<option value="">No players available</option>';
 }
 
+// The innings-break screen between innings 1 and innings 2: shows the
+// target the chasing team needs, and (owner only) a button to kick off
+// the 2nd innings once everyone's ready.
+function renderInningsBreakPanel(d) {
+  const panel = $('#inningsBreakPanel');
+  if (!panel) return;
+  const show = d.status === 'innings-break' && !!d.firstInnings;
+  panel.hidden = !show;
+  if (!show) return;
+
+  const team1Name = d.firstInnings.battingTeam === 'A' ? d.teamA : d.teamB;
+  const team2Name = d.battingTeam === 'A' ? d.teamA : d.teamB;
+  const overs1 = `${Math.floor(d.firstInnings.balls / 6)}.${d.firstInnings.balls % 6}`;
+
+  panel.innerHTML = `
+    <h2>Innings break</h2>
+    <p>${escapeHtml(team1Name)} scored <b>${d.firstInnings.teamRuns}/${d.firstInnings.wickets}</b> from ${overs1} overs.</p>
+    <p class="muted">${escapeHtml(team2Name)} need <b>${d.target}</b> to win from ${d.overs} overs.</p>
+    ${isOwner
+      ? '<div class="panelActions"><button class="btn btn--primary" id="startSecondInningsBtn" type="button">Start 2nd innings</button></div>'
+      : '<p class="muted">Waiting for the scorer to start the chase…</p>'}
+  `;
+  if (isOwner) {
+    const btn = $('#startSecondInningsBtn');
+    if (btn) btn.addEventListener('click', async () => {
+      await db.collection('sessions').doc(currentCode).update({ status: 'live' });
+    });
+  }
+}
+
 function renderLive() {
   const d = currentData;
   if (!d) return;
 
   $('#liveCodeBanner').textContent = `Session code  ${currentCode.split('').join(' ')}`;
   const balls = d.score?.balls || 0;
-  $('#oversText').textContent = `Over ${Math.floor(balls / 6)}.${balls % 6} of ${d.overs}`;
+  $('#oversText').textContent = `Over ${Math.floor(balls / 6)}.${balls % 6} of ${d.overs}${(d.innings || 1) === 2 ? ' · 2nd innings' : ''}`;
   $('#scoreText').textContent = `${d.score?.runs || 0}/${d.score?.wickets || 0}`;
   $('#namesText').textContent = `${d.teamA} vs ${d.teamB}`;
-  $('#onCrease').innerHTML = d.striker
-    ? `<span>🏏 <b>${escapeHtml(d.striker)}</b>${d.striker && !d.needNewBatsman ? '*' : ''}</span><span>${escapeHtml(d.nonStriker || '')}</span><span>Bowler: <b>${escapeHtml(d.bowler || '—')}</b></span>`
-    : '<span class="muted">Waiting for openers…</span>';
+
+  if (d.status === 'innings-break') {
+    $('#onCrease').innerHTML = '<span class="muted">Innings break</span>';
+  } else {
+    $('#onCrease').innerHTML = d.striker
+      ? `<span>🏏 <b>${escapeHtml(d.striker)}</b>${d.striker && !d.needNewBatsman ? '*' : ''}</span><span>${escapeHtml(d.nonStriker || '')}</span><span>Bowler: <b>${escapeHtml(d.bowler || '—')}</b></span>`
+      : '<span class="muted">Waiting for openers…</span>';
+  }
+
+  // Live chase bar: target / runs needed / balls left / required run rate.
+  const chaseBar = $('#chaseBar');
+  if (chaseBar) {
+    const showChase = d.status === 'live' && (d.innings || 1) === 2 && d.target != null;
+    chaseBar.hidden = !showChase;
+    if (showChase) {
+      const ballsLeft = Math.max(0, d.overs * 6 - balls);
+      const runsNeeded = Math.max(0, d.target - (d.score?.runs || 0));
+      const rrr = ballsLeft > 0 ? (runsNeeded / (ballsLeft / 6)).toFixed(2) : '—';
+      chaseBar.innerHTML = `Target <b>${d.target}</b> &nbsp;·&nbsp; Need <b>${runsNeeded}</b> off <b>${ballsLeft}</b> balls &nbsp;·&nbsp; RRR <b>${rrr}</b>`;
+    }
+  }
 
   const strip = $('#ledStrip');
   if (strip) {
@@ -607,6 +695,8 @@ function renderLive() {
   const live = d.status === 'live';
   const ended = d.status === 'ended';
 
+  renderInningsBreakPanel(d);
+
   const battingPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
   const bowlingPlayers = (d.battingTeam === 'A' ? d.teamBPlayers : d.teamAPlayers) || [];
 
@@ -619,9 +709,16 @@ function renderLive() {
   if ($('#newBatsmanPanel')) $('#newBatsmanPanel').hidden = !(isOwner && needBatsman);
   if ($('#bowlerPanel')) $('#bowlerPanel').hidden = !(isOwner && needBowler);
   if ($('#quickScore')) $('#quickScore').hidden = !(isOwner && readyToScore);
-  if ($('#endInningsBtn')) $('#endInningsBtn').hidden = !(isOwner && live);
+  if ($('#endInningsBtn')) {
+    $('#endInningsBtn').hidden = !(isOwner && live);
+    $('#endInningsBtn').textContent = (d.innings || 1) === 1 ? 'End innings' : 'End match';
+  }
+  if ($('#viewResultBtn')) $('#viewResultBtn').hidden = !ended;
   if ($('#viewerNote')) $('#viewerNote').hidden = isOwner;
-  if ($('#matchEndedBanner')) $('#matchEndedBanner').hidden = !ended;
+  if ($('#matchEndedBanner')) {
+    $('#matchEndedBanner').hidden = !ended;
+    if (ended) $('#matchEndedBanner').textContent = computeMatchResultText(d) || 'Match ended';
+  }
 
   if (isOwner && needOpeners) {
     populateSelect('#liveStrikerSelect', battingPlayers);
@@ -698,6 +795,11 @@ function formatDismissal(type, bowler, fielder) {
   }
 }
 
+// Records one ball, and handles all the automatic state transitions that
+// follow it: over/bowler changes, wickets needing a new batter, the 1st
+// innings ending (-> innings break, with a chase target set), the chase
+// being completed (-> match ends immediately, even mid-over), and the
+// 2nd innings ending normally (-> match ends).
 async function recordBall(opts) {
   if (!isOwner || !currentCode) return;
   const ref = db.collection('sessions').doc(currentCode);
@@ -706,7 +808,8 @@ async function recordBall(opts) {
     const d = doc.data();
     if (d.status !== 'live' || !d.striker || !d.nonStriker || !d.bowler || d.needNewBatsman) return;
 
-    // Snapshot everything this ball will touch, so undo can restore it exactly.
+    // Snapshot everything this ball will touch, so undo can restore it exactly
+    // — including a full innings-transition if this ball happens to trigger one.
     const prev = {
       score: d.score,
       striker: d.striker,
@@ -719,6 +822,11 @@ async function recordBall(opts) {
       bowlingStats: d.bowlingStats || {},
       dismissedPlayers: d.dismissedPlayers || [],
       status: d.status,
+      innings: d.innings || 1,
+      target: d.target || null,
+      firstInnings: d.firstInnings || null,
+      battingTeam: d.battingTeam,
+      bowlingTeam: d.bowlingTeam,
     };
 
     const score = { ...d.score };
@@ -754,6 +862,8 @@ async function recordBall(opts) {
     if (entry.extra === 'wd') bowlingStats[bowlerName].wides = (bowlingStats[bowlerName].wides || 0) + 1;
     if (entry.extra === 'nb') bowlingStats[bowlerName].noballs = (bowlingStats[bowlerName].noballs || 0) + 1;
 
+    const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+
     let needNewBatsman = false, outSlot = null;
     if (entry.wicket) {
       score.wickets += 1;
@@ -766,8 +876,8 @@ async function recordBall(opts) {
       dismissedPlayers.push(outPlayerName);
       entry.outPlayer = outPlayerName;
       entry.dismissal = battingStats[outPlayerName].dismissal;
+      if (opts.fielder) entry.fielder = opts.fielder;
 
-      const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
       const otherOnCrease = slot === 'striker' ? d.nonStriker : d.striker;
       const remaining = battingTeamPlayers.filter(p => !dismissedPlayers.includes(p) && p !== otherOnCrease);
       if (remaining.length > 0) { needNewBatsman = true; outSlot = slot; }
@@ -792,24 +902,61 @@ async function recordBall(opts) {
 
     const log = [...(d.log || []), entry];
 
-    // Innings ends automatically: all overs bowled, or all out.
-    const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
-    let status = d.status;
-    if (score.balls >= d.overs * 6) status = 'ended';
-    if (entry.wicket && needNewBatsman === false && dismissedPlayers.length >= battingTeamPlayers.length - 1) {
-      // fewer than 2 players left to bat = all out
-      status = 'ended';
-    }
+    const inningsNum = d.innings || 1;
+    const allOut = !!entry.wicket && !needNewBatsman && dismissedPlayers.length >= battingTeamPlayers.length - 1;
+    const oversDone = score.balls >= d.overs * 6;
+    const targetReached = inningsNum === 2 && d.target != null && score.runs >= d.target;
 
-    tx.update(ref, {
+    const update = {
       score, log, battingStats, bowlingStats, dismissedPlayers,
       striker: newStriker, nonStriker: newNonStriker,
-      bowler: status === 'ended' ? d.bowler : newBowler,
-      lastOverBowler,
-      needNewBatsman: status === 'ended' ? false : needNewBatsman,
-      outSlot: status === 'ended' ? null : outSlot,
-      status,
-    });
+      bowler: newBowler, lastOverBowler,
+      needNewBatsman, outSlot,
+      status: 'live',
+    };
+
+    if (targetReached) {
+      // Chase completed — the match ends the instant the winning run lands,
+      // even mid-over. Freeze the on-field state as it stood at that ball.
+      update.status = 'ended';
+      update.bowler = d.bowler;
+      update.needNewBatsman = false;
+      update.outSlot = null;
+    } else if (allOut || oversDone) {
+      if (inningsNum === 1) {
+        // Innings change: snapshot innings 1, set the chase target, swap
+        // batting/bowling teams, and reset all live-scoring state for a
+        // fresh 2nd innings (openers/bowler get picked again).
+        update.status = 'innings-break';
+        update.innings = 2;
+        update.firstInnings = {
+          battingTeam: d.battingTeam,
+          teamRuns: score.runs, wickets: score.wickets, balls: score.balls,
+          battingStats, bowlingStats, log, dismissedPlayers,
+        };
+        update.target = score.runs + 1;
+        update.battingTeam = d.bowlingTeam;
+        update.bowlingTeam = d.battingTeam;
+        update.striker = null;
+        update.nonStriker = null;
+        update.bowler = null;
+        update.lastOverBowler = null;
+        update.needNewBatsman = false;
+        update.outSlot = null;
+        update.score = { runs: 0, wickets: 0, balls: 0 };
+        update.log = [];
+        update.battingStats = {};
+        update.bowlingStats = {};
+        update.dismissedPlayers = [];
+      } else {
+        update.status = 'ended';
+        update.bowler = d.bowler;
+        update.needNewBatsman = false;
+        update.outSlot = null;
+      }
+    }
+
+    tx.update(ref, update);
   });
 }
 
@@ -836,6 +983,11 @@ async function undoLastBall() {
       bowlingStats: p.bowlingStats,
       dismissedPlayers: p.dismissedPlayers,
       status: p.status,
+      innings: p.innings,
+      target: p.target,
+      firstInnings: p.firstInnings,
+      battingTeam: p.battingTeam,
+      bowlingTeam: p.bowlingTeam,
     });
   });
 }
@@ -851,110 +1003,444 @@ if ($('#quickScore')) {
   });
 }
 
+// Manual innings/match end (owner override, for declarations or curtailed
+// play). Innings 1 -> innings break with a chase target; innings 2 -> match end.
+async function manualEndInnings() {
+  if (!isOwner || !currentCode) return;
+  const ref = db.collection('sessions').doc(currentCode);
+  await db.runTransaction(async tx => {
+    const doc = await tx.get(ref);
+    const d = doc.data();
+    if (d.status !== 'live') return;
+    const inningsNum = d.innings || 1;
+    if (inningsNum === 1) {
+      tx.update(ref, {
+        status: 'innings-break',
+        innings: 2,
+        firstInnings: {
+          battingTeam: d.battingTeam,
+          teamRuns: d.score?.runs || 0, wickets: d.score?.wickets || 0, balls: d.score?.balls || 0,
+          battingStats: d.battingStats || {}, bowlingStats: d.bowlingStats || {},
+          log: d.log || [], dismissedPlayers: d.dismissedPlayers || [],
+        },
+        target: (d.score?.runs || 0) + 1,
+        battingTeam: d.bowlingTeam,
+        bowlingTeam: d.battingTeam,
+        striker: null, nonStriker: null, bowler: null, lastOverBowler: null,
+        needNewBatsman: false, outSlot: null,
+        score: { runs: 0, wickets: 0, balls: 0 },
+        log: [], battingStats: {}, bowlingStats: {}, dismissedPlayers: [],
+      });
+    } else {
+      tx.update(ref, { status: 'ended' });
+    }
+  });
+  toast((currentData && (currentData.innings || 1) === 1) ? 'Innings ended' : 'Match ended');
+}
+if ($('#endInningsBtn')) $('#endInningsBtn').addEventListener('click', manualEndInnings);
+
 // ---------------- Wicket dialog ----------------
+// "How out" determines whether a fielder is relevant at all, and the
+// fielder is always picked from the fielding side's own lineup — never
+// free-typed — so scorecards stay consistent with the roster.
+function fielderOptionsFor(d) {
+  return (d.battingTeam === 'A' ? d.teamBPlayers : d.teamAPlayers) || [];
+}
+function updateWicketFielderVisibility() {
+  const type = $('#wicketTypeSelect') ? $('#wicketTypeSelect').value : '';
+  const needsFielder = type === 'caught' || type === 'runout' || type === 'stumped';
+  if ($('#wicketFielderField')) $('#wicketFielderField').hidden = !needsFielder;
+}
 function openWicketDialog() {
   const d = currentData;
   $('#wicketOutSelect').innerHTML = `
     <option value="striker">${escapeHtml(d.striker)} (striker)</option>
     <option value="nonStriker">${escapeHtml(d.nonStriker)} (non-striker)</option>`;
   $('#wicketTypeSelect').value = 'bowled';
-  $('#wicketFielderInput').value = '';
+  const fielders = fielderOptionsFor(d);
+  if ($('#wicketFielderSelect')) {
+    $('#wicketFielderSelect').innerHTML = fielders.length
+      ? '<option value="">Not sure / unrecorded</option>' + fielders.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
+      : '<option value="">No fielding-side players set</option>';
+  }
+  updateWicketFielderVisibility();
   $('#wicketDialog').hidden = false;
 }
+if ($('#wicketTypeSelect')) $('#wicketTypeSelect').addEventListener('change', updateWicketFielderVisibility);
 if ($('#wicketCancelBtn')) $('#wicketCancelBtn').addEventListener('click', () => { $('#wicketDialog').hidden = true; });
 if ($('#wicketConfirmBtn')) {
   $('#wicketConfirmBtn').addEventListener('click', () => {
     const outSlot = $('#wicketOutSelect').value;
     const dismissalType = $('#wicketTypeSelect').value;
-    const fielder = $('#wicketFielderInput').value.trim();
+    const fielder = $('#wicketFielderSelect') ? $('#wicketFielderSelect').value : '';
     $('#wicketDialog').hidden = true;
     recordBall({ wicket: true, outSlot, dismissalType, fielder });
   });
 }
 
-if ($('#endInningsBtn')) {
-  $('#endInningsBtn').addEventListener('click', async () => {
-    await db.collection('sessions').doc(currentCode).update({ status: 'ended' });
-    toast('Match ended');
-  });
+// ---------------- Match awards (fair, transparent scoring) ----------------
+// Combines the two innings' stats into one flat view per player, tagging
+// each with which team they represented, regardless of whether they batted
+// in innings 1 or innings 2.
+function mergeMatchStats(d) {
+  const battingAll = {}, bowlingAll = {};
+  const merge = (bStats, wStats, battingTeamOfInnings) => {
+    Object.entries(bStats || {}).forEach(([name, s]) => { battingAll[name] = { ...s, team: battingTeamOfInnings }; });
+    Object.entries(wStats || {}).forEach(([name, s]) => { bowlingAll[name] = { ...s, team: battingTeamOfInnings === 'A' ? 'B' : 'A' }; });
+  };
+  if (d.firstInnings) merge(d.firstInnings.battingStats, d.firstInnings.bowlingStats, d.firstInnings.battingTeam);
+  merge(d.battingStats, d.bowlingStats, d.battingTeam);
+  return { battingAll, bowlingAll };
 }
 
-// ---------------- Scorecard ----------------
-if ($('#viewScorecardBtn')) {
-  $('#viewScorecardBtn').addEventListener('click', () => {
-    const d = currentData;
-    $('#scorecardTitle').textContent = `${d.teamA} vs ${d.teamB}`;
-    const balls = d.score?.balls || 0;
-    const log = d.log || [];
-    const battingTeamPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
-    const battingStats = d.battingStats || {};
-    const bowlingStats = d.bowlingStats || {};
+// A single, documented formula used everywhere a "best player" needs
+// picking (Man of the Match and, summed across matches, Man of the Series):
+//   batting: runs + 1 per four + 2 per six, plus a strike-rate bonus
+//            (only once at least an over's worth of balls faced, so a
+//            couple of lucky boundaries can't inflate a tiny sample)
+//   bowling: 20 per wicket, plus an economy bonus under the same
+//            minimum-balls qualifier
+// Ties are broken deterministically (more runs, then more wickets, then
+// alphabetically) so the result never depends on iteration order.
+function computePlayerScore(bat, bowl) {
+  let score = 0;
+  if (bat) {
+    score += (bat.runs || 0) + (bat.fours || 0) * 1 + (bat.sixes || 0) * 2;
+    if (bat.balls >= 6) {
+      const sr = (bat.runs / bat.balls) * 100;
+      if (sr > 100) score += (sr - 100) / 5;
+    }
+  }
+  if (bowl) {
+    score += (bowl.wickets || 0) * 20;
+    if (bowl.balls >= 6) {
+      const eco = bowl.runs / (bowl.balls / 6);
+      if (eco < 6) score += (6 - eco) * 3;
+    }
+  }
+  return score;
+}
 
-    // Batting order = order players first appear on strike in the log.
-    const battedOrder = [];
-    log.forEach(e => { if (e.batter && !battedOrder.includes(e.batter)) battedOrder.push(e.batter); });
-    [d.striker, d.nonStriker].forEach(n => { if (n && !battedOrder.includes(n)) battedOrder.push(n); });
+function computeMatchAwards(d) {
+  const { battingAll, bowlingAll } = mergeMatchStats(d);
+  const battersArr = Object.entries(battingAll).map(([name, s]) => ({ name, ...s }));
+  const bowlersArr = Object.entries(bowlingAll).map(([name, s]) => ({ name, ...s }));
 
-    const battingRows = battedOrder.map(name => {
-      const s = battingStats[name] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
-      const sr = s.balls ? ((s.runs / s.balls) * 100).toFixed(2) : '0.00';
-      const status = s.out
-        ? escapeHtml(s.dismissal || 'out')
-        : (name === d.striker || name === d.nonStriker ? 'not out' : '');
-      return `<tr><td>${escapeHtml(name)}</td><td class="muted">${status}</td><td>${s.runs}</td><td>${s.balls}</td><td>${s.fours}</td><td>${s.sixes}</td><td>${sr}</td></tr>`;
-    }).join('');
+  const mostRuns = battersArr.length
+    ? [...battersArr].sort((a, b) => b.runs - a.runs || b.balls - a.balls || a.name.localeCompare(b.name))[0]
+    : null;
+  const mostWickets = bowlersArr.length
+    ? [...bowlersArr].sort((a, b) => b.wickets - a.wickets || a.runs - b.runs || a.name.localeCompare(b.name))[0]
+    : null;
 
-    const yetToBat = battingTeamPlayers.filter(p => !battedOrder.includes(p));
+  const qualBowlers = bowlersArr.filter(b => b.balls >= 6);
+  const economyPool = qualBowlers.length ? qualBowlers : bowlersArr;
+  const bestEconomy = economyPool.length
+    ? [...economyPool].sort((a, b) => (a.runs / (a.balls / 6 || 1)) - (b.runs / (b.balls / 6 || 1)))[0]
+    : null;
 
-    const extrasRuns = log.filter(e => e.extra).reduce((sum, e) => sum + e.r, 0);
-    const wides = log.filter(e => e.extra === 'wd').reduce((s, e) => s + e.r, 0);
-    const noballs = log.filter(e => e.extra === 'nb').reduce((s, e) => s + e.r, 0);
-    const byes = log.filter(e => e.extra === 'b').reduce((s, e) => s + e.r, 0);
-    const legbyes = log.filter(e => e.extra === 'lb').reduce((s, e) => s + e.r, 0);
+  const qualBatters = battersArr.filter(b => b.balls >= 6);
+  const srPool = qualBatters.length ? qualBatters : battersArr;
+  const bestStrikeRate = srPool.length
+    ? [...srPool].sort((a, b) => (b.runs / b.balls) - (a.runs / a.balls))[0]
+    : null;
 
-    const bowlingRows = Object.keys(bowlingStats).map(name => {
-      const s = bowlingStats[name];
-      const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
-      const eco = s.balls ? (s.runs / (s.balls / 6)).toFixed(2) : '0.00';
-      return `<tr><td>${escapeHtml(name)}</td><td>${overs}</td><td>${s.runs}</td><td>${s.wickets}</td><td>${s.noballs || 0}</td><td>${s.wides || 0}</td><td>${eco}</td></tr>`;
-    }).join('');
+  const names = new Set([...Object.keys(battingAll), ...Object.keys(bowlingAll)]);
+  let motm = null, motmScore = -Infinity;
+  [...names].sort().forEach(name => {
+    const score = computePlayerScore(battingAll[name], bowlingAll[name]);
+    if (score > motmScore) { motmScore = score; motm = name; }
+  });
 
-    let runTotal = 0, ballTotal = 0, wktCount = 0;
-    const fow = [];
-    log.forEach(e => {
-      runTotal += e.r;
-      if (e.legal) ballTotal += 1;
-      if (e.wicket) {
-        wktCount += 1;
-        fow.push({ name: e.outPlayer, score: runTotal, wkt: wktCount, over: `${Math.floor(ballTotal / 6)}.${ballTotal % 6}` });
+  return { mostRuns, mostWickets, bestEconomy, bestStrikeRate, motm, motmScore };
+}
+
+// Works out the plain-English result from the two innings totals: chase
+// completed = win by wickets in hand, overs/all-out without reaching the
+// target = win by runs, equal totals = tie.
+function computeMatchResultText(d) {
+  if (d.status !== 'ended') return '';
+  if (!d.firstInnings) return 'Match ended';
+  const team1Name = d.firstInnings.battingTeam === 'A' ? d.teamA : d.teamB;
+  const team2Name = d.battingTeam === 'A' ? d.teamA : d.teamB;
+  const runs1 = d.firstInnings.teamRuns;
+  const runs2 = d.score?.runs || 0;
+  if (d.target != null && runs2 >= d.target) {
+    const battingPlayers = (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [];
+    const wicketsInHand = Math.max(0, battingPlayers.length - 1 - (d.score?.wickets || 0));
+    return `${team2Name} won by ${wicketsInHand} wicket${wicketsInHand === 1 ? '' : 's'}`;
+  }
+  if (runs2 === runs1) return 'Match tied';
+  if (runs2 < runs1) return `${team1Name} won by ${runs1 - runs2} run${runs1 - runs2 === 1 ? '' : 's'}`;
+  return `${team2Name} won`;
+}
+
+function awardCardHtml(label, name, stat) {
+  return `
+    <div class="awardCard">
+      <div class="awardCard__label">${label}</div>
+      <div class="awardCard__name">${name ? escapeHtml(name) : '—'}</div>
+      <div class="awardCard__stat">${stat || ''}</div>
+    </div>`;
+}
+
+function renderMatchAwardsHtml(d) {
+  const { mostRuns, mostWickets, bestEconomy, bestStrikeRate, motm } = computeMatchAwards(d);
+  return `
+    <div class="motmCard">
+      <div class="motmCard__label">Man of the Match</div>
+      <div class="motmCard__name">${motm ? escapeHtml(motm) : '—'}</div>
+    </div>
+    <div class="awardGrid">
+      ${awardCardHtml('Most Runs', mostRuns?.name, mostRuns ? `${mostRuns.runs} (${mostRuns.balls}b)` : '')}
+      ${awardCardHtml('Most Wickets', mostWickets?.name, mostWickets ? `${mostWickets.wickets}/${mostWickets.runs}` : '')}
+      ${awardCardHtml('Best Economy', bestEconomy?.name, bestEconomy ? `${(bestEconomy.runs / (bestEconomy.balls / 6 || 1)).toFixed(2)} rpo` : '')}
+      ${awardCardHtml('Best Strike Rate', bestStrikeRate?.name, bestStrikeRate ? `${((bestStrikeRate.runs / bestStrikeRate.balls) * 100 || 0).toFixed(1)} SR` : '')}
+    </div>
+  `;
+}
+
+function showMatchResult(d) {
+  if (!d) return;
+  $('#matchResultTitle').textContent = `${d.teamA} vs ${d.teamB}`;
+  const resultText = computeMatchResultText(d);
+  $('#matchResultBody').innerHTML = `
+    <p class="resultBanner">${escapeHtml(resultText || 'Match ended')}</p>
+    ${renderMatchAwardsHtml(d)}
+  `;
+  nav('matchresult');
+}
+if ($('#viewResultBtn')) $('#viewResultBtn').addEventListener('click', () => showMatchResult(currentData));
+
+// ---------------- Next match / series flow ----------------
+if ($('#mrNextMatchBtn')) $('#mrNextMatchBtn').addEventListener('click', () => { $('#nextMatchDialog').hidden = false; });
+if ($('#nmCancelBtn')) $('#nmCancelBtn').addEventListener('click', () => { $('#nextMatchDialog').hidden = true; });
+
+async function proceedNextMatch(sameTeams) {
+  const d = currentData;
+  if (!d) return;
+  $('#nextMatchDialog').hidden = true;
+  await beginSetupDraft({
+    seriesId: d.seriesId || currentCode,
+    seriesMatchNumber: (d.seriesMatchNumber || 1) + 1,
+    teamAName: d.teamA,
+    teamBName: d.teamB,
+    overs: d.overs,
+    teamAPlayers: sameTeams ? d.teamAPlayers : [],
+    teamBPlayers: sameTeams ? d.teamBPlayers : [],
+  });
+  toast(sameTeams ? 'Same lineups carried over — set the toss' : 'Pick lineups for the next match');
+}
+if ($('#nmSameTeamsBtn')) $('#nmSameTeamsBtn').addEventListener('click', () => proceedNextMatch(true));
+if ($('#nmReshuffleBtn')) $('#nmReshuffleBtn').addEventListener('click', () => proceedNextMatch(false));
+
+// ---------------- Series awards ----------------
+async function computeSeriesAwards(seriesId) {
+  const snap = await db.collection('sessions')
+    .where('seriesId', '==', seriesId)
+    .where('status', '==', 'ended')
+    .get();
+
+  const battingTotals = {}, bowlingTotals = {}, seriesPoints = {};
+  const matches = [];
+
+  snap.forEach(doc => {
+    const d = doc.data();
+    matches.push(d);
+    const { battingAll, bowlingAll } = mergeMatchStats(d);
+    const names = new Set([...Object.keys(battingAll), ...Object.keys(bowlingAll)]);
+    names.forEach(name => {
+      const bat = battingAll[name], bowl = bowlingAll[name];
+      if (bat) {
+        if (!battingTotals[name]) battingTotals[name] = { runs: 0, balls: 0, fours: 0, sixes: 0 };
+        battingTotals[name].runs += bat.runs || 0;
+        battingTotals[name].balls += bat.balls || 0;
+        battingTotals[name].fours += bat.fours || 0;
+        battingTotals[name].sixes += bat.sixes || 0;
       }
+      if (bowl) {
+        if (!bowlingTotals[name]) bowlingTotals[name] = { balls: 0, runs: 0, wickets: 0 };
+        bowlingTotals[name].balls += bowl.balls || 0;
+        bowlingTotals[name].runs += bowl.runs || 0;
+        bowlingTotals[name].wickets += bowl.wickets || 0;
+      }
+      seriesPoints[name] = (seriesPoints[name] || 0) + computePlayerScore(bat, bowl);
     });
-    const fowHtml = fow.map(w => `<tr><td>${escapeHtml(w.name)}</td><td>${w.score}-${w.wkt}</td><td>${w.over}</td></tr>`).join('');
+  });
 
-    const runRate = balls ? ((d.score.runs || 0) / (balls / 6)).toFixed(2) : '0.00';
+  const battersArr = Object.entries(battingTotals).map(([name, s]) => ({ name, ...s }));
+  const bowlersArr = Object.entries(bowlingTotals).map(([name, s]) => ({ name, ...s }));
 
-    $('#scorecardBody').innerHTML = `
-      <p class="muted">Toss: ${d.toss ? `${escapeHtml(d.toss.winner)} chose to ${d.toss.decision}` : '—'}</p>
-      <table>
-        <thead><tr><th>Batter</th><th></th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead>
-        <tbody>${battingRows || '<tr><td colspan="7">No batters yet</td></tr>'}</tbody>
-      </table>
-      <p><strong>Extras</strong> ${extrasRuns} (b ${byes}, lb ${legbyes}, w ${wides}, nb ${noballs})</p>
-      <p><strong>Total</strong> ${d.score?.runs || 0}-${d.score?.wickets || 0} (${Math.floor(balls / 6)}.${balls % 6} overs, RR: ${runRate})</p>
-      ${yetToBat.length ? `<p class="muted"><strong>Yet to bat</strong> ${yetToBat.map(escapeHtml).join(', ')}</p>` : ''}
-      <table>
-        <thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>NB</th><th>WD</th><th>ECO</th></tr></thead>
-        <tbody>${bowlingRows || '<tr><td colspan="7">No overs bowled yet</td></tr>'}</tbody>
-      </table>
-      ${fow.length ? `
-        <table>
-          <thead><tr><th>Fall of Wickets</th><th>Score</th><th>Over</th></tr></thead>
-          <tbody>${fowHtml}</tbody>
-        </table>` : ''}
-    `;
-    nav('scorecard');
+  const mostRuns = battersArr.length
+    ? [...battersArr].sort((a, b) => b.runs - a.runs || b.balls - a.balls || a.name.localeCompare(b.name))[0]
+    : null;
+  const mostWickets = bowlersArr.length
+    ? [...bowlersArr].sort((a, b) => b.wickets - a.wickets || a.runs - b.runs || a.name.localeCompare(b.name))[0]
+    : null;
+  const qualBowlers = bowlersArr.filter(b => b.balls >= 6);
+  const economyPool = qualBowlers.length ? qualBowlers : bowlersArr;
+  const bestEconomy = economyPool.length
+    ? [...economyPool].sort((a, b) => (a.runs / (a.balls / 6 || 1)) - (b.runs / (b.balls / 6 || 1)))[0]
+    : null;
+  const qualBatters = battersArr.filter(b => b.balls >= 6);
+  const srPool = qualBatters.length ? qualBatters : battersArr;
+  const bestStrikeRate = srPool.length
+    ? [...srPool].sort((a, b) => (b.runs / b.balls) - (a.runs / a.balls))[0]
+    : null;
+
+  let mots = null, motsScore = -Infinity;
+  Object.keys(seriesPoints).sort().forEach(name => {
+    if (seriesPoints[name] > motsScore) { motsScore = seriesPoints[name]; mots = name; }
+  });
+
+  return { matches, mostRuns, mostWickets, bestEconomy, bestStrikeRate, mots };
+}
+
+async function showSeriesAwards(seriesId) {
+  nav('seriesawards');
+  $('#seriesAwardsBody').innerHTML = '<p class="muted">Crunching the series numbers…</p>';
+  let a;
+  try {
+    a = await computeSeriesAwards(seriesId);
+  } catch (err) {
+    $('#seriesAwardsBody').innerHTML = '<p class="emptyState">Could not load series stats.</p>';
+    return;
+  }
+  const matchRows = a.matches
+    .sort((x, y) => (x.seriesMatchNumber || 0) - (y.seriesMatchNumber || 0))
+    .map(m => `
+      <li class="sessionCard">
+        <div>
+          <div class="sessionCard__code">Match ${m.seriesMatchNumber || ''}</div>
+          <div class="sessionCard__meta">${escapeHtml(m.teamA || '')} vs ${escapeHtml(m.teamB || '')} · ${escapeHtml(computeMatchResultText(m) || '')}</div>
+        </div>
+      </li>`).join('');
+
+  $('#seriesAwardsBody').innerHTML = `
+    <div class="motmCard">
+      <div class="motmCard__label">Man of the Series</div>
+      <div class="motmCard__name">${a.mots ? escapeHtml(a.mots) : '—'}</div>
+    </div>
+    <div class="awardGrid">
+      ${awardCardHtml('Most Runs', a.mostRuns?.name, a.mostRuns ? `${a.mostRuns.runs} runs` : '')}
+      ${awardCardHtml('Most Wickets', a.mostWickets?.name, a.mostWickets ? `${a.mostWickets.wickets} wkts` : '')}
+      ${awardCardHtml('Best Economy', a.bestEconomy?.name, a.bestEconomy ? `${(a.bestEconomy.runs / (a.bestEconomy.balls / 6 || 1)).toFixed(2)} rpo` : '')}
+      ${awardCardHtml('Best Strike Rate', a.bestStrikeRate?.name, a.bestStrikeRate ? `${((a.bestStrikeRate.runs / a.bestStrikeRate.balls) * 100 || 0).toFixed(1)} SR` : '')}
+    </div>
+    <h2 style="margin-top:20px">Matches in this series</h2>
+    <ul class="sessionList">${matchRows || '<p class="emptyState">No completed matches yet.</p>'}</ul>
+  `;
+}
+if ($('#mrEndSeriesBtn')) {
+  $('#mrEndSeriesBtn').addEventListener('click', () => {
+    if (!currentData) return;
+    showSeriesAwards(currentData.seriesId || currentCode);
   });
 }
+
+// ---------------- Scorecard (both innings, when applicable) ----------------
+function inningsScorecardHtml(view) {
+  const battedOrder = [];
+  (view.log || []).forEach(e => { if (e.batter && !battedOrder.includes(e.batter)) battedOrder.push(e.batter); });
+  if (view.strikerNow && !battedOrder.includes(view.strikerNow)) battedOrder.push(view.strikerNow);
+  if (view.nonStrikerNow && !battedOrder.includes(view.nonStrikerNow)) battedOrder.push(view.nonStrikerNow);
+
+  const battingRows = battedOrder.map(name => {
+    const s = view.battingStats[name] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false, dismissal: null };
+    const sr = s.balls ? ((s.runs / s.balls) * 100).toFixed(2) : '0.00';
+    const status = s.out
+      ? escapeHtml(s.dismissal || 'out')
+      : (name === view.strikerNow || name === view.nonStrikerNow ? 'not out' : '');
+    return `<tr><td>${escapeHtml(name)}</td><td class="muted">${status}</td><td>${s.runs}</td><td>${s.balls}</td><td>${s.fours}</td><td>${s.sixes}</td><td>${sr}</td></tr>`;
+  }).join('');
+
+  const yetToBat = view.battingTeamPlayers.filter(p => !battedOrder.includes(p));
+  const log = view.log || [];
+  const extrasRuns = log.filter(e => e.extra).reduce((sum, e) => sum + e.r, 0);
+  const wides = log.filter(e => e.extra === 'wd').reduce((s, e) => s + e.r, 0);
+  const noballs = log.filter(e => e.extra === 'nb').reduce((s, e) => s + e.r, 0);
+  const byes = log.filter(e => e.extra === 'b').reduce((s, e) => s + e.r, 0);
+  const legbyes = log.filter(e => e.extra === 'lb').reduce((s, e) => s + e.r, 0);
+
+  const bowlingRows = Object.keys(view.bowlingStats).map(name => {
+    const s = view.bowlingStats[name];
+    const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
+    const eco = s.balls ? (s.runs / (s.balls / 6)).toFixed(2) : '0.00';
+    return `<tr><td>${escapeHtml(name)}</td><td>${overs}</td><td>${s.runs}</td><td>${s.wickets}</td><td>${s.noballs || 0}</td><td>${s.wides || 0}</td><td>${eco}</td></tr>`;
+  }).join('');
+
+  let runTotal = 0, ballTotal = 0, wktCount = 0;
+  const fow = [];
+  log.forEach(e => {
+    runTotal += e.r;
+    if (e.legal) ballTotal += 1;
+    if (e.wicket) {
+      wktCount += 1;
+      fow.push({ name: e.outPlayer, score: runTotal, wkt: wktCount, over: `${Math.floor(ballTotal / 6)}.${ballTotal % 6}` });
+    }
+  });
+  const fowHtml = fow.map(w => `<tr><td>${escapeHtml(w.name)}</td><td>${w.score}-${w.wkt}</td><td>${w.over}</td></tr>`).join('');
+  const runRate = view.balls ? (view.runs / (view.balls / 6)).toFixed(2) : '0.00';
+
+  return `
+    <h3 style="margin-top:22px">${escapeHtml(view.teamName)} innings</h3>
+    <table>
+      <thead><tr><th>Batter</th><th></th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr></thead>
+      <tbody>${battingRows || '<tr><td colspan="7">No batters yet</td></tr>'}</tbody>
+    </table>
+    <p><strong>Extras</strong> ${extrasRuns} (b ${byes}, lb ${legbyes}, w ${wides}, nb ${noballs})</p>
+    <p><strong>Total</strong> ${view.runs}-${view.wickets} (${Math.floor(view.balls / 6)}.${view.balls % 6} overs, RR: ${runRate})</p>
+    ${yetToBat.length ? `<p class="muted"><strong>Yet to bat</strong> ${yetToBat.map(escapeHtml).join(', ')}</p>` : ''}
+    <table>
+      <thead><tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>NB</th><th>WD</th><th>ECO</th></tr></thead>
+      <tbody>${bowlingRows || '<tr><td colspan="7">No overs bowled yet</td></tr>'}</tbody>
+    </table>
+    ${fow.length ? `
+      <table>
+        <thead><tr><th>Fall of Wickets</th><th>Score</th><th>Over</th></tr></thead>
+        <tbody>${fowHtml}</tbody>
+      </table>` : ''}
+  `;
+}
+
+function showScorecard(d) {
+  if (!d) return;
+  $('#scorecardTitle').textContent = `${d.teamA} vs ${d.teamB}`;
+
+  let body = `<p class="muted">Toss: ${d.toss ? `${escapeHtml(d.toss.winner)} chose to ${d.toss.decision}` : '—'}</p>`;
+  if (d.status === 'ended') {
+    body += `<p class="resultBanner" style="text-align:left;font-size:1rem">${escapeHtml(computeMatchResultText(d) || '')}</p>`;
+  }
+
+  if (d.firstInnings) {
+    const team1Name = d.firstInnings.battingTeam === 'A' ? d.teamA : d.teamB;
+    body += inningsScorecardHtml({
+      teamName: team1Name,
+      battingTeamPlayers: (d.firstInnings.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [],
+      battingStats: d.firstInnings.battingStats || {},
+      bowlingStats: d.firstInnings.bowlingStats || {},
+      log: d.firstInnings.log || [],
+      runs: d.firstInnings.teamRuns, wickets: d.firstInnings.wickets, balls: d.firstInnings.balls,
+      strikerNow: null, nonStrikerNow: null,
+    });
+  }
+
+  const team2Name = d.battingTeam === 'A' ? d.teamA : d.teamB;
+  body += inningsScorecardHtml({
+    teamName: team2Name,
+    battingTeamPlayers: (d.battingTeam === 'A' ? d.teamAPlayers : d.teamBPlayers) || [],
+    battingStats: d.battingStats || {},
+    bowlingStats: d.bowlingStats || {},
+    log: d.log || [],
+    runs: d.score?.runs || 0, wickets: d.score?.wickets || 0, balls: d.score?.balls || 0,
+    strikerNow: d.striker, nonStrikerNow: d.nonStriker,
+  });
+
+  $('#scorecardBody').innerHTML = body;
+  nav('scorecard');
+}
+if ($('#viewScorecardBtn')) $('#viewScorecardBtn').addEventListener('click', () => showScorecard(currentData));
+if ($('#mrScorecardBtn')) $('#mrScorecardBtn').addEventListener('click', () => showScorecard(currentData));
 
 // ---------------- Home: session lists ----------------
 db.collection('sessions').orderBy('createdAt', 'desc').limit(25).onSnapshot(snap => {
@@ -966,12 +1452,15 @@ db.collection('sessions').orderBy('createdAt', 'desc').limit(25).onSnapshot(snap
     const li = document.createElement('li');
     li.className = 'sessionCard';
     const scoreLine = d.score ? `${d.score.runs}/${d.score.wickets}` : 'Not started';
+    const statusLabel = d.status === 'ended' ? 'Ended'
+      : d.status === 'innings-break' ? 'Innings break'
+      : d.status === 'live' ? 'Live' : 'Setup';
     li.innerHTML = `
       <div>
         <div class="sessionCard__code">${doc.id}</div>
-        <div class="sessionCard__meta">${escapeHtml(d.teamA || '')} ${d.teamB ? 'vs ' + escapeHtml(d.teamB) : ''} · ${scoreLine}</div>
+        <div class="sessionCard__meta">${escapeHtml(d.teamA || '')} ${d.teamB ? 'vs ' + escapeHtml(d.teamB) : ''} · ${scoreLine}${d.seriesMatchNumber ? ' · Match ' + d.seriesMatchNumber : ''}</div>
       </div>
-      <span class="badge ${d.status === 'ended' ? 'badge--ended' : ''}">${d.status === 'ended' ? 'Ended' : d.status === 'live' ? 'Live' : 'Setup'}</span>`;
+      <span class="badge ${d.status === 'ended' ? 'badge--ended' : ''}">${statusLabel}</span>`;
     li.addEventListener('click', () => openSessionByCode(doc.id));
     (d.status === 'ended' ? past : live).appendChild(li);
   });
